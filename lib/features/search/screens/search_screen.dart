@@ -14,6 +14,10 @@ class SearchScreen extends StatefulWidget {
   State<SearchScreen> createState() => _SearchScreenState();
 }
 
+const String _encryptedHint =
+    'Encrypted notes are not searched, because their text is only readable '
+    'after decrypting.';
+
 class _SearchScreenState extends State<SearchScreen> {
   final TextEditingController _controller = TextEditingController();
 
@@ -50,7 +54,9 @@ class _SearchScreenState extends State<SearchScreen> {
       body = EmptyState(
         icon: Icons.search_off_rounded,
         title: 'No results',
-        message: 'No notes match “${query.trim()}”.',
+        message:
+            'No notes match “${query.trim()}”.'
+            '${notesProvider.encryptedCount > 0 ? '\n\n$_encryptedHint' : ''}',
       );
     } else {
       body = ListView.separated(
@@ -64,7 +70,12 @@ class _SearchScreenState extends State<SearchScreen> {
             return Padding(
               padding: const EdgeInsets.only(left: 4, bottom: 4),
               child: Text(
-                results.length == 1 ? '1 result' : '${results.length} results',
+                (results.length == 1
+                        ? '1 result'
+                        : '${results.length} results') +
+                    (notesProvider.encryptedCount > 0
+                        ? ' · encrypted notes are not searched'
+                        : ''),
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: scheme.onSurfaceVariant,
                 ),

@@ -12,10 +12,13 @@ class NoteSearch {
   /// Returns notes whose title or content contains [query]. English matches
   /// ignore case; Bangla has no case and matches exactly. Title matches come
   /// first, then content matches, each newest-modified first.
+  ///
+  /// Encrypted notes are never searched: their stored text is ciphertext
+  /// and no plaintext index exists.
   static List<Note> filter(Iterable<Note> notes, String query) {
     final key = TextUtils.searchKey(query.trim());
     if (key.isEmpty) return const [];
-    final ordered = notes.toList()
+    final ordered = notes.where((n) => !n.isEncrypted).toList()
       ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     final titleMatches = <Note>[];
     final contentMatches = <Note>[];

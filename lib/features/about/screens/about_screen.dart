@@ -71,8 +71,13 @@ class AboutScreen extends StatelessWidget {
               ),
               ListTile(
                 leading: Icon(Icons.grid_on_rounded),
-                title: Text('2×2 Hill Cipher (planned)'),
+                title: Text('2×2 Hill Cipher'),
                 subtitle: Text('Optional, educational note encryption'),
+              ),
+              ListTile(
+                leading: Icon(Icons.enhanced_encryption_outlined),
+                title: Text('Secure storage'),
+                subtitle: Text('Keeps encryption keys on this device'),
               ),
             ],
           ),

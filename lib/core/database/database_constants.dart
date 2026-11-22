@@ -29,5 +29,5 @@ class DatabaseConstants {
 
   /// Current database schema version. Increase it and add a migration step
   /// in `DatabaseMigrator` whenever stored data needs converting.
-  static const int schemaVersion = 1;
+  static const int schemaVersion = 2;
 }

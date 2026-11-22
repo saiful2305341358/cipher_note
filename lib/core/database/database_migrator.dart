@@ -1,5 +1,6 @@
 import 'package:hive_ce/hive_ce.dart';
 
+import '../../data/models/note_model.dart';
 import '../errors/app_exceptions.dart';
 import 'database_constants.dart';
 
@@ -33,10 +34,25 @@ class DatabaseMigrator {
 
   /// Step `n` upgrades from version `n - 1` to `n`.
   ///
-  /// Version 1 is the first persistent schema. Phase 1 kept notes in memory
-  /// only, so there is no earlier on-disk data to convert; the step simply
-  /// records the version.
-  static final Map<int, MigrationStep> defaultSteps = {1: (_) async {}};
+  /// * v1: first persistent schema. Phase 1 kept notes in memory only, so
+  ///   there is no earlier on-disk data to convert.
+  /// * v2: notes gain field 9 (`cipherFormat`). Existing notes are plain;
+  ///   the adapter reads the missing field as `null`, so nothing is
+  ///   rewritten. The step only checks that no v1 note claims to be
+  ///   encrypted (encryption did not exist in v1) and fails rather than
+  ///   guess if one does.
+  static final Map<int, MigrationStep> defaultSteps = {
+    1: (_) async {},
+    2: _checkNoEncryptedNotes,
+  };
+
+  static Future<void> _checkNoEncryptedNotes(MigrationContext context) async {
+    for (final value in context.notes.values) {
+      if (value is Note && value.isEncrypted) {
+        throw StateError('A v1 note is marked encrypted');
+      }
+    }
+  }
 
   final Map<int, MigrationStep> steps;
 

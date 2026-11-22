@@ -228,7 +228,7 @@ void main() {
     );
   });
 
-  testWidgets('Encrypt button shows a future-update dialog only', (
+  testWidgets('Encrypt without a key offers to create one; cancel is safe', (
     tester,
   ) async {
     await _pumpApp(tester);
@@ -242,10 +242,9 @@ void main() {
 
     await tester.tap(find.byKey(const Key('encrypt-button')));
     await tester.pumpAndSettle();
-    expect(find.text('Encryption coming soon'), findsOneWidget);
-    await tester.tap(find.text('Close'));
+    expect(find.text('No encryption key yet'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
-    expect(find.text('Encryption coming soon'), findsNothing);
     await _goBack(tester);
     expect(_notesOf(tester).notes.single.content, 'Secret');
     expect(_notesOf(tester).notes.single.isEncrypted, isFalse);
@@ -351,7 +350,7 @@ void main() {
     expect(_notesOf(tester).notes.single.color, AppColors.green.value);
   });
 
-  testWidgets('key management shows no-key state, dialog and demo state', (
+  testWidgets('key management creates, shows and deletes a key', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(1080, 2400);
@@ -363,23 +362,25 @@ void main() {
       find.text('No encryption key has been created yet.'),
       findsOneWidget,
     );
+    expect(find.textContaining('educational cipher'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('generate-key')));
     await tester.pumpAndSettle();
-    expect(
-      find.text('Key generation will be available in a future update.'),
-      findsOneWidget,
-    );
-    await tester.tap(find.text('Close'));
+    // An empty name is rejected.
+    await tester.tap(find.byKey(const Key('create-key-confirm')));
     await tester.pumpAndSettle();
+    expect(find.text('Enter a name for the key.'), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('preview-demo-key')));
+    await tester.enterText(find.byKey(const Key('key-name-field')), 'Personal');
+    await tester.tap(find.byKey(const Key('create-key-confirm')));
     await tester.pumpAndSettle();
-    expect(find.text('Key available'), findsOneWidget);
-    expect(find.text('DEMO-2X2-0001'), findsOneWidget);
+    expect(find.text('Personal'), findsOneWidget);
+    expect(find.text('Active'), findsOneWidget);
+    expect(find.textContaining('Version 1'), findsOneWidget);
 
-    await tester.ensureVisible(find.byKey(const Key('delete-key')));
-    await tester.tap(find.byKey(const Key('delete-key')));
+    await tester.tap(find.byTooltip('Key options'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete').last);
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(TextButton, 'Delete'));
     await tester.pumpAndSettle();
@@ -435,7 +436,7 @@ void main() {
     await tester.tap(find.text('About Cipher Note'));
     await tester.pumpAndSettle();
     expect(
-      find.text('Version 1.1.0 (build 2) · Phase 2 · Local storage'),
+      find.text('Version 1.2.0 (build 3) · Phase 3 · Hill Cipher'),
       findsOneWidget,
     );
     await _goBack(tester);

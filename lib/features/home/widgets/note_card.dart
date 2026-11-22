@@ -15,6 +15,7 @@ class NoteCard extends StatelessWidget {
     this.isGrid = false,
     this.showPreview = true,
     this.highlight,
+    this.keyAvailable = true,
   });
 
   final Note note;
@@ -24,6 +25,10 @@ class NoteCard extends StatelessWidget {
 
   /// Optional search text to highlight in the title and preview.
   final String? highlight;
+
+  /// For encrypted notes: whether the key needed to read it is on this
+  /// device.
+  final bool keyAvailable;
 
   /// Content preview text. When the note has no title, the first line is
   /// used as the title, so the preview starts from the second line.
@@ -40,15 +45,21 @@ class NoteCard extends StatelessWidget {
     final scheme = theme.colorScheme;
     final background = AppColors.noteBackground(note.color, brightness);
     final accent = AppColors.noteAccent(note.color, brightness);
-    final preview = _preview;
-    final showBody = showPreview && preview.isNotEmpty;
+    // Encrypted notes never show their stored text (ciphertext) or title.
+    final preview = note.isEncrypted
+        ? (keyAvailable ? 'Tap to decrypt' : 'Key unavailable on this device')
+        : _preview;
+    final showBody = note.isEncrypted || (showPreview && preview.isNotEmpty);
 
     final titleStyle = theme.textTheme.titleMedium?.copyWith(
       fontWeight: FontWeight.w600,
       height: 1.3,
     );
     final previewStyle = theme.textTheme.bodyMedium?.copyWith(
-      color: scheme.onSurface.withValues(alpha: 0.72),
+      color: note.isEncrypted && !keyAvailable
+          ? scheme.error
+          : scheme.onSurface.withValues(alpha: 0.72),
+      fontStyle: note.isEncrypted ? FontStyle.italic : null,
       height: 1.4,
     );
     final dateStyle = theme.textTheme.labelSmall?.copyWith(
@@ -60,7 +71,7 @@ class NoteCard extends StatelessWidget {
         ? Padding(
             padding: const EdgeInsets.only(right: 4),
             child: Icon(
-              Icons.lock_rounded,
+              keyAvailable ? Icons.lock_rounded : Icons.key_off_rounded,
               size: 14,
               color: scheme.onSurfaceVariant,
             ),
@@ -134,7 +145,9 @@ class NoteCard extends StatelessWidget {
 
     return Semantics(
       button: true,
-      label: 'Note: ${note.displayTitle}',
+      label: note.isEncrypted
+          ? 'Encrypted note${keyAvailable ? '' : ', key unavailable'}'
+          : 'Note: ${note.displayTitle}',
       excludeSemantics: false,
       child: DecoratedBox(
         decoration: BoxDecoration(
