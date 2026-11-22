@@ -85,13 +85,17 @@ class HiveService {
       final appMetadata = await openBox<dynamic>(
         DatabaseConstants.appMetadataBox,
       );
-      final notes = await openBox<Note>(DatabaseConstants.notesBox);
-      final settings = await openBox<AppSettings>(
-        DatabaseConstants.settingsBox,
-      );
-      final keyMetadata = await openBox<KeyMetadata>(
-        DatabaseConstants.keyMetadataBox,
-      );
+      // The remaining boxes are independent, so open them in parallel to
+      // shorten startup.
+      // Future.wait (not record `.wait`) so the original error is rethrown.
+      final boxes = await Future.wait<Box<dynamic>>([
+        openBox<Note>(DatabaseConstants.notesBox),
+        openBox<AppSettings>(DatabaseConstants.settingsBox),
+        openBox<KeyMetadata>(DatabaseConstants.keyMetadataBox),
+      ]);
+      final notes = boxes[0] as Box<Note>;
+      final settings = boxes[1] as Box<AppSettings>;
+      final keyMetadata = boxes[2] as Box<KeyMetadata>;
 
       final version = await (migrator ?? DatabaseMigrator()).migrate(
         appMetadata: appMetadata,
