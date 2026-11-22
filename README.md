@@ -15,6 +15,9 @@ user-created 2×2 Hill Cipher key is planned for a later phase.
   encryption of note titles and content, keys in secure storage. See
   [docs/PHASE_3_IMPLEMENTATION.md](docs/PHASE_3_IMPLEMENTATION.md).
   **The Hill Cipher is educational, not secure encryption.**
+- **Phase 4 (workflow & key versions):** Encrypt button after saving,
+  Decrypt Note in the ⋮ menu, key versions and validation. See
+  [docs/PHASE_4_IMPLEMENTATION.md](docs/PHASE_4_IMPLEMENTATION.md).
 
 ## Structure
 

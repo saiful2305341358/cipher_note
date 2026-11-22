@@ -228,21 +228,24 @@ void main() {
     );
   });
 
-  testWidgets('Encrypt without a key offers to create one; cancel is safe', (
-    tester,
-  ) async {
+  testWidgets('Encrypt appears after saving; without a key it offers to '
+      'create one, and cancel is safe', (tester) async {
     await _pumpApp(tester);
     await tester.tap(find.byTooltip('Add note'));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('encrypt-button')), findsNothing);
 
     await tester.enterText(find.byKey(const Key('editor-content')), 'Secret');
+    await tester.pump();
+    // Not saved yet: no Encrypt button for a new note.
+    expect(find.byKey(const Key('encrypt-button')), findsNothing);
+    await tester.pump(const Duration(seconds: 1));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('encrypt-button')), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('encrypt-button')));
     await tester.pumpAndSettle();
-    expect(find.text('No encryption key yet'), findsOneWidget);
+    expect(find.text('No Encryption Key Found'), findsOneWidget);
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
     await _goBack(tester);
@@ -376,11 +379,13 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Personal'), findsOneWidget);
     expect(find.text('Active'), findsOneWidget);
-    expect(find.textContaining('Version 1'), findsOneWidget);
+    expect(find.text('Version 1'), findsOneWidget);
+    expect(find.text('Not used by any note', findRichText: true), findsNothing);
+    expect(find.textContaining('Not used by any note'), findsOneWidget);
 
-    await tester.tap(find.byTooltip('Key options'));
+    await tester.tap(find.byTooltip('Version options'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Delete').last);
+    await tester.tap(find.text('Delete version'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(TextButton, 'Delete'));
     await tester.pumpAndSettle();
@@ -436,7 +441,7 @@ void main() {
     await tester.tap(find.text('About Cipher Note'));
     await tester.pumpAndSettle();
     expect(
-      find.text('Version 1.2.0 (build 3) · Phase 3 · Hill Cipher'),
+      find.text('Version 1.3.0 (build 4) · Phase 4 · Key versions'),
       findsOneWidget,
     );
     await _goBack(tester);

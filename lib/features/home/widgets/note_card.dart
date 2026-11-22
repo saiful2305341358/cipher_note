@@ -47,7 +47,7 @@ class NoteCard extends StatelessWidget {
     final accent = AppColors.noteAccent(note.color, brightness);
     // Encrypted notes never show their stored text (ciphertext) or title.
     final preview = note.isEncrypted
-        ? (keyAvailable ? 'Tap to decrypt' : 'Key unavailable on this device')
+        ? (keyAvailable ? 'Locked' : 'Key unavailable on this device')
         : _preview;
     final showBody = note.isEncrypted || (showPreview && preview.isNotEmpty);
 

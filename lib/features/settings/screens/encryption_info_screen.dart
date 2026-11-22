@@ -22,8 +22,10 @@ const List<_InfoSection> _english = [
     Icons.key_outlined,
     'Your own key',
     'You create keys in Key Management. Each key is a random 2×2 Hill '
-        'Cipher matrix kept in secure storage on this device. Only its name '
-        'and details are shown; the key values are never displayed.',
+        'Cipher matrix kept in secure storage on this device. A key can have '
+        'several versions: a new version gets a new matrix and is used for '
+        'new notes, while older notes keep the version they were encrypted '
+        'with. Key values are never displayed.',
   ),
   _InfoSection(
     Icons.toggle_on_outlined,
@@ -42,16 +44,18 @@ const List<_InfoSection> _english = [
   _InfoSection(
     Icons.edit_note_rounded,
     'Reading and editing',
-    'Open an encrypted note and tap Decrypt. The readable text is kept only '
-        'while the note is open. When you finish, encrypt it again or save '
-        'it as plain text. Encrypted notes are not included in search.',
+    'Save a note, then tap Encrypt at the bottom. To read an encrypted '
+        'note, open it and choose Decrypt Note from the ⋮ menu; choose Edit '
+        'to change it. The readable text is kept only while the note is open. '
+        'When you finish, encrypt it again or save it as plain text. '
+        'Encrypted notes are not included in search.',
   ),
   _InfoSection(
     Icons.key_off_outlined,
     'Keep your keys',
     'If a key is deleted or lost (for example, by uninstalling the app), '
-        'notes encrypted with it cannot be read again. A key that is used by '
-        'notes cannot be deleted in the app.',
+        'notes encrypted with it cannot be read again. A key version that is '
+        'used by notes cannot be deleted in the app.',
   ),
   _InfoSection(
     Icons.warning_amber_rounded,
@@ -74,8 +78,10 @@ const List<_InfoSection> _bangla = [
     Icons.key_outlined,
     'আপনার নিজের কী',
     'কী ম্যানেজমেন্টে আপনি কী তৈরি করেন। প্রতিটি কী একটি র‍্যান্ডম ২×২ হিল '
-        'সাইফার ম্যাট্রিক্স, যা এই ডিভাইসের সুরক্ষিত স্টোরেজে রাখা হয়। শুধু এর '
-        'নাম ও তথ্য দেখানো হয়; কী-এর মান কখনো দেখানো হয় না।',
+        'সাইফার ম্যাট্রিক্স, যা এই ডিভাইসের সুরক্ষিত স্টোরেজে রাখা হয়। একটি '
+        'কী-এর একাধিক সংস্করণ (version) থাকতে পারে: নতুন সংস্করণ নতুন নোটে '
+        'ব্যবহৃত হয়, আর পুরোনো নোট আগের সংস্করণই ব্যবহার করে। কী-এর মান কখনো '
+        'দেখানো হয় না।',
   ),
   _InfoSection(
     Icons.toggle_on_outlined,
@@ -93,16 +99,18 @@ const List<_InfoSection> _bangla = [
   _InfoSection(
     Icons.edit_note_rounded,
     'পড়া ও সম্পাদনা',
-    'এনক্রিপ্ট করা নোট খুলে "Decrypt" চাপুন। নোট খোলা থাকা পর্যন্তই পড়ার মতো '
-        'লেখা রাখা হয়। কাজ শেষে আবার এনক্রিপ্ট করুন বা সাধারণ লেখা হিসেবে '
-        'সংরক্ষণ করুন। এনক্রিপ্ট করা নোট সার্চে আসে না।',
+    'নোট সংরক্ষণের পর নিচের "Encrypt" বোতাম চাপুন। এনক্রিপ্ট করা নোট পড়তে '
+        'নোটটি খুলে ⋮ মেনু থেকে "Decrypt Note" বেছে নিন; বদলাতে "Edit" বেছে '
+        'নিন। নোট খোলা থাকা পর্যন্তই পড়ার মতো লেখা রাখা হয়। কাজ শেষে আবার '
+        'এনক্রিপ্ট করুন বা সাধারণ লেখা হিসেবে সংরক্ষণ করুন। এনক্রিপ্ট করা নোট '
+        'সার্চে আসে না।',
   ),
   _InfoSection(
     Icons.key_off_outlined,
     'কী সংরক্ষণ করুন',
     'কোনো কী মুছে গেলে বা হারালে (যেমন অ্যাপ আনইনস্টল করলে) সেই কী দিয়ে '
-        'এনক্রিপ্ট করা নোট আর পড়া যাবে না। যে কী কোনো নোটে ব্যবহৃত হচ্ছে, '
-        'অ্যাপে তা মোছা যায় না।',
+        'এনক্রিপ্ট করা নোট আর পড়া যাবে না। কী-এর যে সংস্করণ কোনো নোটে '
+        'ব্যবহৃত হচ্ছে, অ্যাপে তা মোছা যায় না।',
   ),
   _InfoSection(
     Icons.warning_amber_rounded,

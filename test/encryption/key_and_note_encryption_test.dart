@@ -81,7 +81,7 @@ void main() {
             .split(',')
             .map(int.parse);
         expect(HillKeyMatrix.fromList(values.toList()), isA<HillKeyMatrix>());
-        expect(await world.metadata.getById(key.id), key);
+        expect(await world.metadata.getVersion(key.id, 1), key);
       },
     );
 
@@ -172,19 +172,19 @@ void main() {
       await world.notes.updateNote(encrypted);
 
       await expectLater(
-        world.keys.deleteKey(key.id),
+        world.keys.deleteVersion(key.id, 1),
         throwsA(
           isA<KeyInUseException>().having((e) => e.noteCount, 'count', 1),
         ),
       );
-      expect(await world.metadata.getById(key.id), isNotNull);
+      expect(await world.metadata.getVersion(key.id, 1), isNotNull);
       expect(world.secure.entries, isNotEmpty);
 
       // Once the note is plain again, the key can go.
       await world.notes.updateNote(
         encrypted.toPlain(title: 'x', content: 'y', updatedAt: DateTime(2027)),
       );
-      await world.keys.deleteKey(key.id);
+      await world.keys.deleteVersion(key.id, 1);
       expect(await world.metadata.getAll(), isEmpty);
       expect(world.secure.entries, isEmpty);
     });
@@ -196,7 +196,7 @@ void main() {
       var all = await world.keys.listKeys();
       expect(all.first.id, b.id);
       expect(all.where((k) => k.isActive).single.id, b.id);
-      await world.keys.setActive(a.id);
+      await world.keys.setActive(a.id, 1);
       all = await world.keys.listKeys();
       expect(all.where((k) => k.isActive).single.id, a.id);
     });
@@ -462,7 +462,7 @@ void main() {
     test('key metadata in Hive never contains key values', () async {
       final key = await world.keys.createKey('Personal');
       final material = world.secure.entries.values.single;
-      final stored = await world.metadata.getById(key.id);
+      final stored = await world.metadata.getVersion(key.id, 1);
       expect(stored!.name, 'Personal');
       // Raw on-disk bytes of the key metadata box do not contain the
       // material string.
@@ -474,7 +474,8 @@ void main() {
       expect(String.fromCharCodes(bytes), isNot(contains(material)));
     });
 
-    test('a schema v1 database upgrades to v2 and keeps plain notes', () async {
+    test('a schema v1 database upgrades to the current version and keeps '
+        'plain notes', () async {
       // Build a v1 database the way Phase 2 wrote it.
       await world.notes.createNote(
         _plain('old', title: 'Old', content: 'Body'),
@@ -483,8 +484,11 @@ void main() {
       await db.close();
 
       await restart();
-      expect(service.schemaVersion, 2);
-      expect(service.appMetadata.get(DatabaseConstants.schemaVersionKey), 2);
+      expect(service.schemaVersion, DatabaseConstants.schemaVersion);
+      expect(
+        service.appMetadata.get(DatabaseConstants.schemaVersionKey),
+        DatabaseConstants.schemaVersion,
+      );
       final note = (await world.notes.getNoteById('old'))!;
       expect(note.title, 'Old');
       expect(note.isEncrypted, isFalse);

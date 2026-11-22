@@ -5,9 +5,9 @@ class AppConstants {
   AppConstants._();
 
   static const String appName = 'Cipher Note';
-  static const String appVersion = '1.2.0';
-  static const int buildNumber = 3;
-  static const String developmentPhase = 'Phase 3 · Hill Cipher';
+  static const String appVersion = '1.3.0';
+  static const int buildNumber = 4;
+  static const String developmentPhase = 'Phase 4 · Key versions';
 
   static const String appDescription =
       'A minimalist note-taking app for English and Bangla. Notes are '

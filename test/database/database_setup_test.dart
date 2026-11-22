@@ -220,16 +220,22 @@ void main() {
 
     test('create, read, update and delete', () async {
       await repo.create(_key('k1'));
-      expect(await repo.getById('k1'), _key('k1'));
+      expect(await repo.getVersion('k1', 1), _key('k1'));
       expect(await repo.getActive(), _key('k1'));
 
-      await repo.update(_key('k1').copyWith(version: 2, isActive: false));
-      final updated = await repo.getById('k1');
-      expect(updated!.version, 2);
-      expect(updated.isActive, isFalse);
+      await repo.update(_key('k1').copyWith(isActive: false));
+      final updated = await repo.getVersion('k1', 1);
+      expect(updated!.isActive, isFalse);
       expect(await repo.getActive(), isNull);
 
-      await repo.delete('k1');
+      // A second version of the same key is a separate record.
+      await repo.create(_key('k1', version: 2));
+      expect((await repo.getVersions('k1')).map((k) => k.version), [2, 1]);
+      expect(await repo.getVersion('k1', 1), isNotNull);
+
+      await repo.delete('k1', 1);
+      expect((await repo.getAll()).map((k) => k.version), [2]);
+      await repo.delete('k1', 2);
       expect(await repo.getAll(), isEmpty);
     });
 
@@ -251,7 +257,7 @@ void main() {
     test('metadata survives a restart', () async {
       await repo.create(_key('k1'));
       repo = HiveKeyMetadataRepository((await db.open()).keyMetadata);
-      expect(await repo.getById('k1'), _key('k1'));
+      expect(await repo.getVersion('k1', 1), _key('k1'));
     });
 
     test('validates ids, versions and display names', () {
@@ -291,7 +297,7 @@ void main() {
         final raw = await Hive.openBox<dynamic>(
           DatabaseConstants.keyMetadataBox,
         );
-        final fields = raw.get('k1') as Map<int, Object?>;
+        final fields = raw.get('k1@v1') as Map<int, Object?>;
         await raw.close();
         Hive.resetAdapters();
 

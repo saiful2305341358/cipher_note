@@ -185,6 +185,29 @@ class NotesProvider extends ChangeNotifier {
         return note;
       });
 
+  /// Re-reads one note from storage (the source of truth) and updates the
+  /// in-memory copy. Returns `null` if it no longer exists.
+  Future<Note?> reloadNote(String id) =>
+      _write('The note could not be loaded.', () async {
+        final stored = await _repository.getNoteById(id);
+        if (stored == null) {
+          if (_notes.remove(id) != null) notifyListeners();
+          return null;
+        }
+        if (_notes[id] != stored) {
+          _notes[id] = stored;
+          notifyListeners();
+        }
+        return stored;
+      });
+
+  /// Number of encrypted notes using exactly this key version.
+  int notesUsingKey(String keyId, int version) => _notes.values
+      .where(
+        (n) => n.isEncrypted && n.keyId == keyId && n.keyVersion == version,
+      )
+      .length;
+
   /// Number of encrypted notes (they are not included in search).
   int get encryptedCount => _notes.values.where((n) => n.isEncrypted).length;
 

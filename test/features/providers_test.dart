@@ -302,10 +302,10 @@ void main() {
       final first = await keys.createKey('First');
       final second = await keys.createKey('Second');
       expect(keys.activeKey!.id, second.id);
-      await keys.setActive(first.id);
+      await keys.setActive(first.id, 1);
       expect(keys.activeKey!.id, first.id);
       expect(keys.keys.where((k) => k.isActive), hasLength(1));
-      await keys.deleteKey(second.id);
+      await keys.deleteVersion(second.id, 1);
       expect(keys.keys.map((k) => k.id), [first.id]);
     });
 
@@ -322,8 +322,8 @@ void main() {
         ]),
       );
       await keys.load();
-      expect(keys.keyById('k1')!.version, 2);
-      expect(keys.keyById('missing'), isNull);
+      expect(keys.version('k1', 2)!.name, 'Stored');
+      expect(keys.version('k1', 1), isNull);
     });
   });
 
