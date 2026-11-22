@@ -60,6 +60,11 @@ class AboutScreen extends StatelessWidget {
                 subtitle: Text('App state management'),
               ),
               ListTile(
+                leading: Icon(Icons.storage_rounded),
+                title: Text('Hive CE'),
+                subtitle: Text('Local on-device database'),
+              ),
+              ListTile(
                 leading: Icon(Icons.translate_rounded),
                 title: Text('English & বাংলা'),
                 subtitle: Text('Noto Sans Bengali font for Bangla text'),

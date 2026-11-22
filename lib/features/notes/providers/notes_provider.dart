@@ -1,34 +1,30 @@
-import 'dart:math';
-
 import 'package:flutter/foundation.dart';
 
+import '../../../core/errors/app_exceptions.dart';
+import '../../../core/errors/error_reporter.dart';
+import '../../../core/utils/id_generator.dart';
+import '../../../core/utils/note_search.dart';
+import '../../../core/utils/text_utils.dart';
+import '../../../data/models/app_settings.dart';
 import '../../../data/models/note_model.dart';
 import '../../../data/repositories/note_repository.dart';
-import '../../../core/utils/text_utils.dart';
 
-/// How notes are ordered on the home screen.
-enum NoteSortOrder {
-  modified('Modified time'),
-  created('Created time'),
-  title('Title'),
-  color('Color');
-
-  const NoteSortOrder(this.label);
-  final String label;
-}
+export '../../../data/models/app_settings.dart' show NoteSortOrder;
 
 /// App-facing note state. Screens read and change notes only through this
 /// class; persistence is delegated to a [NoteRepository].
 ///
-/// Changes are applied to the in-memory cache first (so the UI updates
-/// immediately) and then forwarded to the repository.
+/// Every change is written to the repository first. The in-memory list and
+/// the UI are updated only after the write succeeds, so the app never shows
+/// a change as saved when it was not. Failed writes throw an
+/// [AppException] for the caller to report.
 class NotesProvider extends ChangeNotifier {
   NotesProvider(
     this._repository, {
     DateTime Function()? clock,
     String Function()? idGenerator,
   }) : _clock = clock ?? DateTime.now,
-       _idGenerator = idGenerator ?? _defaultId;
+       _idGenerator = idGenerator ?? IdGenerator.generate;
 
   final NoteRepository _repository;
   final DateTime Function() _clock;
@@ -36,18 +32,14 @@ class NotesProvider extends ChangeNotifier {
 
   final Map<String, Note> _notes = {};
   bool _isLoaded = false;
-
-  static int _idCounter = 0;
-  static final Random _random = Random();
-
-  static String _defaultId() {
-    _idCounter++;
-    final time = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
-    final rand = _random.nextInt(1 << 20).toRadixString(36);
-    return 'n_${time}_${_idCounter.toRadixString(36)}_$rand';
-  }
+  bool _isLoading = false;
+  AppException? _loadError;
 
   bool get isLoaded => _isLoaded;
+  bool get isLoading => _isLoading;
+
+  /// Set when the last [load] failed.
+  AppException? get loadError => _loadError;
 
   /// All notes, most recently modified first.
   List<Note> get notes => sorted(NoteSortOrder.modified);
@@ -56,14 +48,30 @@ class NotesProvider extends ChangeNotifier {
 
   bool get isEmpty => _notes.isEmpty;
 
-  /// Loads notes from the repository into memory.
+  /// Loads notes from the repository. On failure [loadError] is set and the
+  /// current list is kept.
   Future<void> load() async {
-    final stored = await _repository.getAll();
-    _notes
-      ..clear()
-      ..addEntries(stored.map((n) => MapEntry(n.id, n)));
-    _isLoaded = true;
+    _isLoading = true;
+    _loadError = null;
     notifyListeners();
+    try {
+      final stored = await _repository.getAllNotes();
+      _notes
+        ..clear()
+        ..addEntries(stored.map((n) => MapEntry(n.id, n)));
+      _isLoaded = true;
+    } on AppException catch (error) {
+      _loadError = error;
+    } catch (error, stack) {
+      ErrorReporter.report('NotesProvider.load', error, stack);
+      _loadError = StorageException(
+        'Your notes could not be loaded.',
+        cause: error,
+      );
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
   }
 
   Note? getById(String id) => _notes[id];
@@ -91,12 +99,24 @@ class NotesProvider extends ChangeNotifier {
     return list;
   }
 
-  /// Creates and stores a new note.
+  /// Wraps unexpected errors so callers only ever see [AppException].
+  Future<T> _write<T>(String failure, Future<T> Function() action) async {
+    try {
+      return await action();
+    } on AppException {
+      rethrow;
+    } catch (error, stack) {
+      ErrorReporter.report('NotesProvider', error, stack);
+      throw StorageException(failure, cause: error);
+    }
+  }
+
+  /// Creates and stores a new note with a new unique id.
   Future<Note> createNote({
     String title = '',
     String content = '',
     required int color,
-  }) async {
+  }) => _write('The note could not be saved.', () async {
     final now = _clock();
     final note = Note(
       id: _idGenerator(),
@@ -106,22 +126,25 @@ class NotesProvider extends ChangeNotifier {
       createdAt: now,
       updatedAt: now,
     );
+    await _repository.createNote(note);
     _notes[note.id] = note;
     notifyListeners();
-    await _repository.save(note);
     return note;
-  }
+  });
 
-  /// Updates an existing note. Only the given fields change. The modified
-  /// time is updated only when something actually changed.
-  Future<Note?> updateNote(
+  /// Updates an existing note. Only the given fields change; the id and
+  /// creation time never change. The modified time is updated only when
+  /// something actually changed.
+  Future<Note> updateNote(
     String id, {
     String? title,
     String? content,
     int? color,
-  }) async {
+  }) => _write('The note could not be saved.', () async {
     final existing = _notes[id];
-    if (existing == null) return null;
+    if (existing == null) {
+      throw const RecordNotFoundException('This note no longer exists.');
+    }
     final changed =
         (title != null && title != existing.title) ||
         (content != null && content != existing.content) ||
@@ -134,47 +157,50 @@ class NotesProvider extends ChangeNotifier {
       color: color,
       updatedAt: _clock(),
     );
+    await _repository.updateNote(updated);
     _notes[id] = updated;
     notifyListeners();
-    await _repository.save(updated);
     return updated;
-  }
+  });
 
   /// Changes the colour of a note.
-  Future<Note?> changeColor(String id, int color) =>
+  Future<Note> changeColor(String id, int color) =>
       updateNote(id, color: color);
 
-  /// Deletes a note and returns it (so it can be restored), or `null`.
-  Future<Note?> deleteNote(String id) async {
-    final removed = _notes.remove(id);
-    if (removed == null) return null;
-    notifyListeners();
-    await _repository.delete(id);
-    return removed;
-  }
+  /// Deletes a note and returns it (so it can be restored), or `null` if it
+  /// did not exist.
+  Future<Note?> deleteNote(String id) =>
+      _write('The note could not be deleted.', () async {
+        final existing = _notes[id];
+        if (existing == null) return null;
+        await _repository.deleteNote(id);
+        _notes.remove(id);
+        notifyListeners();
+        return existing;
+      });
 
   /// Puts a previously deleted note back, unchanged.
-  Future<void> restoreNote(Note note) async {
-    _notes[note.id] = note;
-    notifyListeners();
-    await _repository.save(note);
-  }
+  Future<void> restoreNote(Note note) =>
+      _write('The note could not be restored.', () async {
+        if (_notes.containsKey(note.id)) {
+          await _repository.updateNote(note);
+        } else {
+          await _repository.createNote(note);
+        }
+        _notes[note.id] = note;
+        notifyListeners();
+      });
 
-  /// Notes whose title or content contains [query] (case-insensitive for
-  /// English; Bangla is matched exactly). Results are ordered with title
-  /// matches first, then by modified time.
-  List<Note> search(String query) {
-    final key = TextUtils.searchKey(query.trim());
-    if (key.isEmpty) return const [];
-    final titleMatches = <Note>[];
-    final contentMatches = <Note>[];
-    for (final note in sorted(NoteSortOrder.modified)) {
-      if (TextUtils.searchKey(note.title).contains(key)) {
-        titleMatches.add(note);
-      } else if (TextUtils.searchKey(note.content).contains(key)) {
-        contentMatches.add(note);
-      }
-    }
-    return [...titleMatches, ...contentMatches];
-  }
+  /// Deletes every note.
+  Future<void> deleteAllNotes() =>
+      _write('Your notes could not be deleted.', () async {
+        await _repository.deleteAllNotes();
+        _notes.clear();
+        notifyListeners();
+      });
+
+  /// Notes whose title or content contains [query]. Runs on the loaded
+  /// notes so results update instantly while typing; uses the same rules as
+  /// [NoteRepository.searchNotes].
+  List<Note> search(String query) => NoteSearch.filter(_notes.values, query);
 }

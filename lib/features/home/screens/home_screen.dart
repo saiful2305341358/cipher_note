@@ -97,7 +97,21 @@ class HomeScreen extends StatelessWidget {
           const SizedBox(width: 4),
         ],
       ),
-      body: !notesProvider.isLoaded
+      body: notesProvider.loadError != null && !notesProvider.isLoaded
+          ? EmptyState(
+              icon: Icons.cloud_off_rounded,
+              title: 'Your notes could not be loaded',
+              message:
+                  '${notesProvider.loadError!.message} '
+                  'Nothing has been deleted.',
+              action: FilledButton.icon(
+                key: const Key('notes-retry'),
+                onPressed: notesProvider.isLoading ? null : notesProvider.load,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Try again'),
+              ),
+            )
+          : !notesProvider.isLoaded
           ? const Center(child: CircularProgressIndicator())
           : notesProvider.isEmpty
           ? EmptyState(

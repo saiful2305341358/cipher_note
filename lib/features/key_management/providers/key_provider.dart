@@ -1,44 +1,77 @@
 import 'package:flutter/foundation.dart';
 
-import '../../../data/models/encryption_key_info.dart';
-import '../../../data/repositories/key_repository.dart';
+import '../../../core/errors/app_exceptions.dart';
+import '../../../core/errors/error_reporter.dart';
+import '../../../data/models/key_metadata.dart';
+import '../../../data/repositories/key_metadata_repository.dart';
 
 /// Encryption key status, kept separate from note management.
 ///
-/// Phase 1 cannot create real keys. [showDemoKey] only stores mock metadata
-/// so that the "key available" screen state can be previewed.
+/// Reads stored key metadata. Real keys cannot be created yet, so normally
+/// there is none. [showDemoKey] shows clearly labelled example metadata to
+/// preview the screen; the demo is never saved.
 class KeyProvider extends ChangeNotifier {
   KeyProvider(this._repository, {DateTime Function()? clock})
     : _clock = clock ?? DateTime.now;
 
-  final KeyRepository _repository;
+  final KeyMetadataRepository _repository;
   final DateTime Function() _clock;
 
-  EncryptionKeyInfo? _keyInfo;
+  KeyMetadata? _activeKey;
+  KeyMetadata? _demoKey;
+  AppException? _error;
 
-  EncryptionKeyInfo? get keyInfo => _keyInfo;
-  bool get hasKey => _keyInfo != null;
+  /// The key shown on screen: the stored active key, or the demo preview.
+  KeyMetadata? get keyInfo => _activeKey ?? _demoKey;
+
+  bool get hasKey => keyInfo != null;
+
+  /// True when the shown key is the unsaved demo preview.
+  bool get isDemo => _activeKey == null && _demoKey != null;
+
+  /// Set when loading or deleting key metadata failed.
+  AppException? get error => _error;
 
   Future<void> load() async {
-    _keyInfo = await _repository.getKeyInfo();
+    try {
+      _activeKey = await _repository.getActive();
+      _error = null;
+    } on AppException catch (error) {
+      _error = error;
+    } catch (error, stack) {
+      ErrorReporter.report('KeyProvider.load', error, stack);
+      _error = StorageException(
+        'Key information could not be loaded.',
+        cause: error,
+      );
+    }
     notifyListeners();
   }
 
-  /// Stores demo key metadata (no key material) for UI preview purposes.
-  Future<void> showDemoKey() async {
-    final info = EncryptionKeyInfo(
+  /// Shows example metadata (no key material, not saved).
+  void showDemoKey() {
+    _demoKey = KeyMetadata(
       id: 'DEMO-2X2-0001',
+      name: 'Demo key',
+      version: 1,
+      algorithm: KeyMetadata.hillCipher2x2,
       createdAt: _clock(),
-      isDemo: true,
     );
-    _keyInfo = info;
     notifyListeners();
-    await _repository.saveKeyInfo(info);
   }
 
+  /// Removes the demo preview, or deletes the stored active key metadata.
+  /// Throws [AppException] if a stored record could not be deleted.
   Future<void> deleteKey() async {
-    _keyInfo = null;
+    if (isDemo) {
+      _demoKey = null;
+      notifyListeners();
+      return;
+    }
+    final active = _activeKey;
+    if (active == null) return;
+    await _repository.delete(active.id);
+    _activeKey = await _repository.getActive();
     notifyListeners();
-    await _repository.deleteKeyInfo();
   }
 }

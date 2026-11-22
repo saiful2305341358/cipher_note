@@ -5,6 +5,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/errors/app_exceptions.dart';
+import '../../../core/errors/error_reporter.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/date_formatter.dart';
 import '../../../core/utils/text_utils.dart';
@@ -18,12 +20,17 @@ enum _EditorMenuAction { color, share, info, delete }
 
 enum _LeaveChoice { save, discard, stay }
 
+enum _FailedSaveChoice { retry, discard, stay }
+
+enum _SaveStatus { idle, saving, saved, failed }
+
 /// Creates a new note ([noteId] is null) or edits an existing one.
 ///
 /// Edits are kept in a local draft. With auto-save on (the default), the
-/// draft is written to the note store shortly after typing stops and when
-/// leaving the screen. With auto-save off, leaving with unsaved changes asks
-/// the user to Save or Discard.
+/// draft is saved shortly after typing pauses, when the app goes to the
+/// background and before leaving the screen. With auto-save off, leaving
+/// with unsaved changes asks the user to Save or Discard. If a save fails,
+/// the user is told and changes are never dropped without asking.
 class NoteEditorScreen extends StatefulWidget {
   const NoteEditorScreen({super.key, this.noteId});
 
@@ -33,7 +40,8 @@ class NoteEditorScreen extends StatefulWidget {
   State<NoteEditorScreen> createState() => _NoteEditorScreenState();
 }
 
-class _NoteEditorScreenState extends State<NoteEditorScreen> {
+class _NoteEditorScreenState extends State<NoteEditorScreen>
+    with WidgetsBindingObserver {
   late final NotesProvider _notes;
   late final SettingsProvider _settings;
   late final TextEditingController _titleController;
@@ -42,15 +50,30 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
 
   String? _noteId;
   late int _color;
+
+  // Last values successfully written to storage.
   late String _savedTitle;
   late String _savedContent;
   late int _savedColor;
+
+  // Last text seen by the change listener (it also fires for cursor moves).
+  late String _seenTitle;
+  late String _seenContent;
+
   Timer? _autoSaveTimer;
+
+  /// Saves run strictly one after another through this chain, so two saves
+  /// never overlap and a new note is never created twice.
+  Future<bool> _saveChain = Future.value(true);
+  int _savesInFlight = 0;
+  _SaveStatus _status = _SaveStatus.idle;
+  AppException? _saveError;
   bool _closing = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _notes = context.read<NotesProvider>();
     _settings = context.read<SettingsProvider>();
 
@@ -58,8 +81,8 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
         ? null
         : _notes.getById(widget.noteId!);
     _noteId = existing?.id;
-    _savedTitle = existing?.title ?? '';
-    _savedContent = existing?.content ?? '';
+    _savedTitle = _seenTitle = existing?.title ?? '';
+    _savedContent = _seenContent = existing?.content ?? '';
     _savedColor = existing?.color ?? _settings.defaultNoteColor;
     _color = _savedColor;
 
@@ -71,16 +94,59 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _autoSaveTimer?.cancel();
+    // Safety net: if the screen is removed some other way while auto-save
+    // is on, still store the latest draft.
+    if (!_closing && _settings.autoSave && _hasUnsavedChanges) {
+      _saveDraftAfterDispose();
+    }
     _titleController.dispose();
     _contentController.dispose();
     _contentFocus.dispose();
     super.dispose();
   }
 
+  void _saveDraftAfterDispose() {
+    final id = _noteId;
+    final title = _titleController.text;
+    final content = _contentController.text;
+    final color = _color;
+    _saveChain.then((_) async {
+      try {
+        if (id == null) {
+          await _notes.createNote(title: title, content: content, color: color);
+        } else {
+          await _notes.updateNote(
+            id,
+            title: title,
+            content: content,
+            color: color,
+          );
+        }
+      } on AppException catch (error, stack) {
+        ErrorReporter.report('NoteEditor.dispose', error, stack);
+      }
+    });
+  }
+
+  /// Saves right away when the app goes to the background, so changes are
+  /// not lost if the system closes the app.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed &&
+        _settings.autoSave &&
+        _hasUnsavedChanges &&
+        !_closing) {
+      _commit();
+    }
+  }
+
   Note? get _note => _noteId == null ? null : _notes.getById(_noteId!);
 
   bool get _isNew => _noteId == null;
+
+  bool get _isSaving => _savesInFlight > 0;
 
   bool get _draftIsEmpty =>
       _titleController.text.trim().isEmpty &&
@@ -98,42 +164,73 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
   }
 
   void _onTextChanged() {
-    // Rebuild so the Encrypt button and the pop guard stay up to date.
+    final title = _titleController.text;
+    final content = _contentController.text;
+    if (title == _seenTitle && content == _seenContent) return;
+    _seenTitle = title;
+    _seenContent = content;
+    // Rebuild so the Encrypt button, status and pop guard stay up to date.
     setState(() {});
-    if (_settings.autoSave) {
-      _autoSaveTimer?.cancel();
-      _autoSaveTimer = Timer(AppConstants.autoSaveDelay, _commit);
-    }
+    if (_settings.autoSave) _scheduleAutoSave();
   }
 
-  /// Writes the draft to the note store. Returns false if there was nothing
-  /// to save (an empty new note).
-  Future<bool> _commit() async {
+  /// Debounce: write once typing pauses instead of on every keystroke.
+  void _scheduleAutoSave() {
     _autoSaveTimer?.cancel();
-    if (!_hasUnsavedChanges) return !_isNew;
+    _autoSaveTimer = Timer(AppConstants.autoSaveDelay, _commit);
+  }
+
+  /// Queues a save of the current draft. Completes with `true` when the
+  /// draft is stored (or there was nothing to store), `false` on failure.
+  Future<bool> _commit() {
+    _autoSaveTimer?.cancel();
+    final run = _saveChain.then((_) => _performSave());
+    _saveChain = run;
+    return run;
+  }
+
+  Future<bool> _performSave() async {
+    if (!_hasUnsavedChanges) return true;
     final title = _titleController.text;
     final content = _contentController.text;
     final color = _color;
-    if (_isNew) {
-      final note = await _notes.createNote(
-        title: title,
-        content: content,
-        color: color,
-      );
-      _noteId = note.id;
-    } else {
-      await _notes.updateNote(
-        _noteId!,
-        title: title,
-        content: content,
-        color: color,
-      );
+
+    _savesInFlight++;
+    _setStatus(_SaveStatus.saving);
+    try {
+      if (_isNew) {
+        final note = await _notes.createNote(
+          title: title,
+          content: content,
+          color: color,
+        );
+        _noteId = note.id;
+      } else {
+        await _notes.updateNote(
+          _noteId!,
+          title: title,
+          content: content,
+          color: color,
+        );
+      }
+      _savedTitle = title;
+      _savedContent = content;
+      _savedColor = color;
+      _saveError = null;
+      _savesInFlight--;
+      _setStatus(_SaveStatus.saved);
+      return true;
+    } on AppException catch (error) {
+      _saveError = error;
+      _savesInFlight--;
+      _setStatus(_SaveStatus.failed);
+      return false;
     }
-    _savedTitle = title;
-    _savedContent = content;
-    _savedColor = color;
+  }
+
+  void _setStatus(_SaveStatus status) {
+    _status = status;
     if (mounted) setState(() {});
-    return true;
   }
 
   Future<void> _onSavePressed() async {
@@ -145,24 +242,44 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
       );
       return;
     }
-    await _commit();
+    final ok = await _commit();
     messenger
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        const SnackBar(
-          content: Text('Note saved'),
-          duration: Duration(seconds: 2),
+        SnackBar(
+          content: Text(ok ? 'Note saved' : _saveErrorMessage),
+          duration: const Duration(seconds: 2),
         ),
       );
   }
+
+  String get _saveErrorMessage =>
+      _saveError?.message ?? 'The note could not be saved.';
 
   Future<void> _handlePop(bool didPop) async {
     if (didPop || _closing) return;
     final navigator = Navigator.of(context);
 
-    if (_settings.autoSave) {
-      await _commit();
+    if (!_hasUnsavedChanges && !_isSaving) {
       _close(navigator);
+      return;
+    }
+
+    if (_settings.autoSave) {
+      // Flush the pending autosave before leaving.
+      while (mounted) {
+        if (await _commit()) {
+          _close(navigator);
+          return;
+        }
+        if (!mounted) return;
+        final choice = await _askAfterFailedSave();
+        if (choice == _FailedSaveChoice.discard) {
+          _close(navigator);
+          return;
+        }
+        if (choice != _FailedSaveChoice.retry) return;
+      }
       return;
     }
 
@@ -192,14 +309,49 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
     if (!mounted) return;
     switch (choice) {
       case _LeaveChoice.save:
-        await _commit();
-        _close(navigator);
+        if (await _commit()) {
+          _close(navigator);
+        } else if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(_saveErrorMessage)));
+        }
       case _LeaveChoice.discard:
         _close(navigator);
       case _LeaveChoice.stay || null:
         break;
     }
   }
+
+  /// Asked when leaving fails to save. Changes are only dropped if the user
+  /// explicitly chooses to discard them.
+  Future<_FailedSaveChoice?> _askAfterFailedSave() => showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      icon: Icon(
+        Icons.error_outline_rounded,
+        color: Theme.of(context).colorScheme.error,
+      ),
+      title: const Text('Unable to save'),
+      content: Text(
+        '$_saveErrorMessage\n\nIf you leave now, your latest changes '
+        'will be lost.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(_FailedSaveChoice.stay),
+          child: const Text('Keep editing'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(_FailedSaveChoice.discard),
+          child: const Text('Discard changes'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_FailedSaveChoice.retry),
+          child: const Text('Try again'),
+        ),
+      ],
+    ),
+  );
 
   void _close(NavigatorState navigator) {
     _autoSaveTimer?.cancel();
@@ -233,11 +385,25 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
 
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
+    // Let any running save finish first so it cannot re-create the note.
+    _autoSaveTimer?.cancel();
+    await _saveChain;
+    if (!mounted) return;
     final id = _noteId;
-    _close(navigator);
-    if (id == null) return;
+    if (id == null) {
+      _close(navigator);
+      return;
+    }
 
-    final removed = await _notes.deleteNote(id);
+    final Note? removed;
+    try {
+      removed = await _notes.deleteNote(id);
+    } on AppException catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text(error.message)));
+      return;
+    }
+    if (!mounted) return;
+    _close(navigator);
     if (removed == null) return;
     messenger
       ..hideCurrentSnackBar()
@@ -246,7 +412,13 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
           content: const Text('Note deleted'),
           action: SnackBarAction(
             label: 'Undo',
-            onPressed: () => _notes.restoreNote(removed),
+            onPressed: () async {
+              try {
+                await _notes.restoreNote(removed!);
+              } on AppException catch (error) {
+                messenger.showSnackBar(SnackBar(content: Text(error.message)));
+              }
+            },
           ),
         ),
       );
@@ -323,7 +495,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
         'Encryption',
         (note?.isEncrypted ?? false) ? 'Encrypted' : 'Not encrypted',
       ),
-      ('Storage', 'This session only (in memory)'),
+      ('Storage', note == null ? 'Not saved yet' : 'Saved on this device'),
     ];
     await showDialog<void>(
       context: context,
@@ -402,14 +574,25 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
     final note = _note;
 
     final String status;
-    if (note == null) {
+    if (_status == _SaveStatus.failed) {
+      status = 'Unable to save';
+    } else if (_isSaving ||
+        (_settings.autoSave && _hasUnsavedChanges && !_closing)) {
+      status = 'Saving…';
+    } else if (_hasUnsavedChanges) {
+      status = 'Unsaved changes';
+    } else if (note == null) {
       status = 'New note';
+    } else if (_status == _SaveStatus.saved) {
+      status = 'Saved · Edited ${DateFormatter.full(note.updatedAt)}';
     } else {
       status = 'Edited ${DateFormatter.full(note.updatedAt)}';
     }
 
     return PopScope<Object?>(
-      canPop: _closing || !_hasUnsavedChanges,
+      // Every back action goes through [_handlePop] so pending changes are
+      // always checked, even if the user leaves within the same frame.
+      canPop: _closing,
       onPopInvokedWithResult: (didPop, _) => _handlePop(didPop),
       child: Scaffold(
         backgroundColor: background,
@@ -498,11 +681,10 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  status,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
+                _SaveStatusLine(
+                  text: status,
+                  isError: _status == _SaveStatus.failed,
+                  onRetry: _commit,
                 ),
                 const SizedBox(height: 8),
                 TextField(
@@ -552,6 +734,50 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Small status text under the app bar ("Saving…", "Saved", errors).
+class _SaveStatusLine extends StatelessWidget {
+  const _SaveStatusLine({
+    required this.text,
+    required this.isError,
+    required this.onRetry,
+  });
+
+  final String text;
+  final bool isError;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final style = theme.textTheme.labelSmall?.copyWith(
+      color: isError ? scheme.error : scheme.onSurfaceVariant,
+      fontWeight: isError ? FontWeight.w600 : null,
+    );
+    if (!isError) {
+      return Text(text, key: const Key('editor-status'), style: style);
+    }
+    return Row(
+      children: [
+        Icon(Icons.error_outline_rounded, size: 14, color: scheme.error),
+        const SizedBox(width: 4),
+        Flexible(
+          child: Text(text, key: const Key('editor-status'), style: style),
+        ),
+        TextButton(
+          key: const Key('editor-retry'),
+          onPressed: onRetry,
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+          ),
+          child: const Text('Retry'),
+        ),
+      ],
     );
   }
 }

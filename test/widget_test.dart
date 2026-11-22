@@ -1,16 +1,17 @@
-// Widget tests for the Phase 1 UI: navigation, note CRUD through the UI,
-// search, grid/list, colours, theme switching, unsaved changes and the
-// encryption/key-management placeholders.
+// Widget tests for the UI: navigation, note CRUD through the UI, search,
+// grid/list, colours, theme switching, autosave, unsaved changes, save
+// failures and the encryption/key-management placeholders.
 
 import 'package:cipher_note/app.dart';
 import 'package:cipher_note/core/theme/app_colors.dart';
 import 'package:cipher_note/data/models/note_model.dart';
-import 'package:cipher_note/data/repositories/note_repository.dart';
 import 'package:cipher_note/features/notes/providers/notes_provider.dart';
 import 'package:cipher_note/features/settings/providers/settings_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
+
+import 'helpers/test_repositories.dart';
 
 const _bangla = 'আমি Flutter দিয়ে একটি Note Taking Application তৈরি করছি।';
 
@@ -26,18 +27,18 @@ Note _note(String id, String title, String content, {int? color}) {
   );
 }
 
-Future<void> _pumpApp(
+Future<ControllableNoteRepository> _pumpApp(
   WidgetTester tester, {
   List<Note> notes = const [],
   SettingsProvider? settings,
+  ControllableNoteRepository? repository,
 }) async {
+  final repo = repository ?? ControllableNoteRepository(notes);
   await tester.pumpWidget(
-    CipherNoteApp(
-      noteRepository: InMemoryNoteRepository(notes),
-      settings: settings,
-    ),
+    CipherNoteApp(noteRepository: repo, settings: settings),
   );
   await tester.pumpAndSettle();
+  return repo;
 }
 
 NotesProvider _notesOf(WidgetTester tester) => Provider.of<NotesProvider>(
@@ -150,7 +151,13 @@ void main() {
     await tester.pump();
 
     await _goBack(tester);
-    expect(find.text('Unsaved changes'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('Unsaved changes'),
+      ),
+      findsOneWidget,
+    );
 
     // Keep editing keeps the editor open.
     await tester.tap(find.text('Keep editing'));
@@ -347,6 +354,9 @@ void main() {
   testWidgets('key management shows no-key state, dialog and demo state', (
     tester,
   ) async {
+    tester.view.physicalSize = const Size(1080, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
     await _pumpApp(tester);
     await _openMenuItem(tester, 'Key Management');
     expect(
@@ -425,7 +435,7 @@ void main() {
     await tester.tap(find.text('About Cipher Note'));
     await tester.pumpAndSettle();
     expect(
-      find.text('Version 1.0.0 (build 1) · Phase 1 · UI preview'),
+      find.text('Version 1.1.0 (build 2) · Phase 2 · Local storage'),
       findsOneWidget,
     );
     await _goBack(tester);
