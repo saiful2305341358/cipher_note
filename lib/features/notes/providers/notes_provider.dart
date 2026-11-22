@@ -76,8 +76,22 @@ class NotesProvider extends ChangeNotifier {
 
   Note? getById(String id) => _notes[id];
 
-  /// Returns the notes ordered by [order].
-  List<Note> sorted(NoteSortOrder order) {
+  /// Sorted lists by order, reused across rebuilds until the notes change.
+  final Map<NoteSortOrder, List<Note>> _sortedCache = {};
+
+  @override
+  void notifyListeners() {
+    // Every change to [_notes] is followed by a notification.
+    _sortedCache.clear();
+    super.notifyListeners();
+  }
+
+  /// Returns the notes ordered by [order]. The list is cached and must not
+  /// be modified.
+  List<Note> sorted(NoteSortOrder order) =>
+      _sortedCache[order] ??= List.unmodifiable(_sort(order));
+
+  List<Note> _sort(NoteSortOrder order) {
     final list = _notes.values.toList();
     switch (order) {
       case NoteSortOrder.modified:
@@ -85,11 +99,11 @@ class NotesProvider extends ChangeNotifier {
       case NoteSortOrder.created:
         list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
       case NoteSortOrder.title:
-        list.sort(
-          (a, b) =>
-              TextUtils.searchKey(a.displayTitle)
-                  .compareTo(TextUtils.searchKey(b.displayTitle)),
-        );
+        // Normalise each title once, not on every comparison.
+        final keys = {
+          for (final n in list) n.id: TextUtils.searchKey(n.displayTitle),
+        };
+        list.sort((a, b) => keys[a.id]!.compareTo(keys[b.id]!));
       case NoteSortOrder.color:
         list.sort((a, b) {
           final byColor = a.color.compareTo(b.color);

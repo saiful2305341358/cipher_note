@@ -29,11 +29,29 @@ android {
         versionName = flutter.versionName
     }
 
+    // Store native libraries (the Flutter engine and compiled Dart code)
+    // compressed in the APK. This roughly halves the APK file size; Android
+    // unpacks them once at install time.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+
+            // Shrink the release build: R8 removes unused Java/Kotlin code
+            // and unused Android resources are stripped.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 }
