@@ -3,25 +3,33 @@ import 'package:provider/provider.dart';
 
 import 'core/constants/app_constants.dart';
 import 'core/theme/app_theme.dart';
-import 'data/repositories/key_repository.dart';
+import 'data/repositories/key_metadata_repository.dart';
 import 'data/repositories/note_repository.dart';
+import 'data/repositories/settings_repository.dart';
 import 'features/key_management/providers/key_provider.dart';
 import 'features/notes/providers/notes_provider.dart';
 import 'features/settings/providers/settings_provider.dart';
 import 'routes/app_routes.dart';
 
-/// Root widget. Repositories can be injected (for tests, or later for a
-/// Hive-backed implementation); by default in-memory stores are used.
+/// Root widget.
+///
+/// The app passes the Hive-backed repositories created by `AppInitializer`.
+/// When a repository is omitted (in tests) an in-memory one is used.
 class CipherNoteApp extends StatelessWidget {
   const CipherNoteApp({
     super.key,
     this.noteRepository,
     this.keyRepository,
+    this.settingsRepository,
     this.settings,
   });
 
   final NoteRepository? noteRepository;
-  final KeyRepository? keyRepository;
+  final KeyMetadataRepository? keyRepository;
+  final SettingsRepository? settingsRepository;
+
+  /// Initial settings state. When omitted, defaults are used and saved to
+  /// [settingsRepository].
   final SettingsProvider? settings;
 
   @override
@@ -29,7 +37,8 @@ class CipherNoteApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<SettingsProvider>(
-          create: (_) => settings ?? SettingsProvider(),
+          create: (_) =>
+              settings ?? SettingsProvider(repository: settingsRepository),
         ),
         ChangeNotifierProvider<NotesProvider>(
           create: (_) =>
@@ -37,7 +46,8 @@ class CipherNoteApp extends StatelessWidget {
         ),
         ChangeNotifierProvider<KeyProvider>(
           create: (_) =>
-              KeyProvider(keyRepository ?? InMemoryKeyRepository())..load(),
+              KeyProvider(keyRepository ?? InMemoryKeyMetadataRepository())
+                ..load(),
         ),
       ],
       child: Consumer<SettingsProvider>(

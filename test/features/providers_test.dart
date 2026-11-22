@@ -1,11 +1,15 @@
 import 'package:cipher_note/core/theme/app_colors.dart';
-import 'package:cipher_note/data/repositories/key_repository.dart';
+import 'package:cipher_note/core/errors/app_exceptions.dart';
+import 'package:cipher_note/data/models/key_metadata.dart';
+import 'package:cipher_note/data/repositories/key_metadata_repository.dart';
 import 'package:cipher_note/data/repositories/note_repository.dart';
 import 'package:cipher_note/features/key_management/providers/key_provider.dart';
 import 'package:cipher_note/features/notes/providers/notes_provider.dart';
 import 'package:cipher_note/features/settings/providers/settings_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+
+import '../helpers/test_repositories.dart';
 
 void main() {
   group('NotesProvider', () {
@@ -40,21 +44,21 @@ void main() {
       expect(note.isEncrypted, isFalse);
       expect(note.createdAt, now);
       expect(provider.getById(note.id), note);
-      expect(await repo.getById(note.id), note);
+      expect(await repo.getNoteById(note.id), note);
     });
 
     test('updates fields and modified time only when changed', () async {
       final note = await provider.createNote(title: 'A', color: 1);
       now = now.add(const Duration(hours: 1));
       final same = await provider.updateNote(note.id, title: 'A');
-      expect(same!.updatedAt, note.updatedAt);
+      expect(same.updatedAt, note.updatedAt);
 
       final updated = await provider.updateNote(note.id, content: 'Body');
-      expect(updated!.content, 'Body');
+      expect(updated.content, 'Body');
       expect(updated.title, 'A');
       expect(updated.createdAt, note.createdAt);
       expect(updated.updatedAt, now);
-      expect((await repo.getById(note.id))!.content, 'Body');
+      expect((await repo.getNoteById(note.id))!.content, 'Body');
     });
 
     test('changes note color', () async {
@@ -68,7 +72,7 @@ void main() {
       final removed = await provider.deleteNote(note.id);
       expect(removed, note);
       expect(provider.getById(note.id), isNull);
-      expect(await repo.getById(note.id), isNull);
+      expect(await repo.getNoteById(note.id), isNull);
       expect(await provider.deleteNote(note.id), isNull);
 
       await provider.restoreNote(removed!);
@@ -148,7 +152,90 @@ void main() {
     });
   });
 
+  group('NotesProvider failures', () {
+    test('a failed write throws and leaves the list unchanged', () async {
+      final repo = ControllableNoteRepository();
+      final provider = NotesProvider(repo);
+      await provider.load();
+      final note = await provider.createNote(title: 'ok', color: 1);
+
+      repo.failWrites = true;
+      await expectLater(
+        provider.createNote(title: 'fails', color: 1),
+        throwsA(isA<StorageException>()),
+      );
+      await expectLater(
+        provider.updateNote(note.id, title: 'changed'),
+        throwsA(isA<StorageException>()),
+      );
+      expect(provider.notes.single.title, 'ok');
+
+      repo.failDeletes = true;
+      await expectLater(
+        provider.deleteNote(note.id),
+        throwsA(isA<StorageException>()),
+      );
+      expect(provider.getById(note.id), isNotNull);
+    });
+
+    test('a failed load sets loadError and can be retried', () async {
+      final repo = ControllableNoteRepository()..failLoad = true;
+      final provider = NotesProvider(repo);
+      await provider.load();
+      expect(provider.isLoaded, isFalse);
+      expect(provider.loadError, isA<StorageException>());
+
+      repo.failLoad = false;
+      await provider.load();
+      expect(provider.isLoaded, isTrue);
+      expect(provider.loadError, isNull);
+    });
+
+    test(
+      'updating a deleted note reports it instead of re-creating it',
+      () async {
+        final provider = NotesProvider(InMemoryNoteRepository());
+        await provider.load();
+        await expectLater(
+          provider.updateNote('missing', title: 'x'),
+          throwsA(isA<RecordNotFoundException>()),
+        );
+        expect(provider.isEmpty, isTrue);
+      },
+    );
+  });
+
   group('SettingsProvider', () {
+    test('saves every change and reports failures', () async {
+      final repo = RecordingSettingsRepository();
+      final settings = SettingsProvider(repository: repo);
+      settings.setThemeMode(ThemeMode.dark);
+      settings.setViewMode(NoteViewMode.grid);
+      await settings.pendingSave;
+      expect(repo.stored.themeMode, ThemeMode.dark);
+      expect(repo.stored.viewMode, NoteViewMode.grid);
+      expect(settings.saveError, isNull);
+
+      repo.failSaves = true;
+      settings.setThemeMode(ThemeMode.light);
+      await settings.pendingSave;
+      expect(settings.themeMode, ThemeMode.light, reason: 'still applied');
+      expect(settings.saveError, isA<StorageException>());
+
+      repo.failSaves = false;
+      settings.setThemeMode(ThemeMode.dark);
+      await settings.pendingSave;
+      expect(settings.saveError, isNull);
+    });
+
+    test('setting the same value does not write again', () async {
+      final repo = RecordingSettingsRepository();
+      final settings = SettingsProvider(repository: repo);
+      settings.setThemeMode(ThemeMode.system);
+      await settings.pendingSave;
+      expect(repo.saveCalls, 0);
+    });
+
     test('toggles between list and grid view', () {
       final settings = SettingsProvider();
       expect(settings.viewMode, NoteViewMode.list);
@@ -184,14 +271,35 @@ void main() {
 
   group('KeyProvider', () {
     test('has no key by default and can preview/delete a demo key', () async {
-      final keys = KeyProvider(InMemoryKeyRepository());
+      final repo = InMemoryKeyMetadataRepository();
+      final keys = KeyProvider(repo);
       await keys.load();
       expect(keys.hasKey, isFalse);
-      await keys.showDemoKey();
+      keys.showDemoKey();
       expect(keys.hasKey, isTrue);
-      expect(keys.keyInfo!.isDemo, isTrue);
+      expect(keys.isDemo, isTrue);
+      expect(await repo.getAll(), isEmpty, reason: 'demo is never saved');
       await keys.deleteKey();
       expect(keys.hasKey, isFalse);
+    });
+
+    test('shows stored active key metadata and can delete it', () async {
+      final repo = InMemoryKeyMetadataRepository([
+        KeyMetadata(
+          id: 'k1',
+          name: 'Personal',
+          version: 2,
+          algorithm: KeyMetadata.hillCipher2x2,
+          createdAt: DateTime(2026),
+        ),
+      ]);
+      final keys = KeyProvider(repo);
+      await keys.load();
+      expect(keys.isDemo, isFalse);
+      expect(keys.keyInfo!.version, 2);
+      await keys.deleteKey();
+      expect(keys.hasKey, isFalse);
+      expect(await repo.getAll(), isEmpty);
     });
   });
 

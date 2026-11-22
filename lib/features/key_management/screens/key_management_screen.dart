@@ -4,13 +4,14 @@ import 'package:provider/provider.dart';
 import '../../../core/utils/date_formatter.dart';
 import '../../../core/widgets/dialogs.dart';
 import '../../../core/widgets/section_header.dart';
-import '../../../data/models/encryption_key_info.dart';
+import '../../../core/errors/app_exceptions.dart';
+import '../../../data/models/key_metadata.dart';
 import '../../../routes/app_routes.dart';
 import '../providers/key_provider.dart';
 
 /// Shows the status of the (future) Hill Cipher key.
 ///
-/// No cryptographic work happens here in Phase 1. A clearly-labelled demo
+/// No cryptographic work happens here yet. A clearly-labelled demo
 /// state can be shown to preview how an existing key will look.
 class KeyManagementScreen extends StatelessWidget {
   const KeyManagementScreen({super.key});
@@ -31,13 +32,19 @@ class KeyManagementScreen extends StatelessWidget {
     final confirmed = await showConfirmDialog(
       context,
       title: 'Delete key?',
-      message: keys.keyInfo?.isDemo ?? false
+      message: keys.isDemo
           ? 'This removes the demo key preview. No notes are affected.'
-          : 'This removes the encryption key.',
+          : 'This removes the encryption key information.',
       confirmLabel: 'Delete',
       destructive: true,
     );
-    if (confirmed) await keys.deleteKey();
+    if (!confirmed || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await keys.deleteKey();
+    } on AppException catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text(error.message)));
+    }
   }
 
   @override
@@ -64,6 +71,14 @@ class KeyManagementScreen extends StatelessWidget {
               ),
             ),
           ),
+          if (keys.error != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              child: Text(
+                keys.error!.message,
+                style: theme.textTheme.bodySmall?.copyWith(color: scheme.error),
+              ),
+            ),
           const SectionHeader('Current key'),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -73,6 +88,7 @@ class KeyManagementScreen extends StatelessWidget {
                   ? _KeyAvailableCard(
                       key: const ValueKey('key-available'),
                       info: keys.keyInfo!,
+                      isDemo: keys.isDemo,
                       onChange: () =>
                           _showFutureDialog(context, title: 'Change key'),
                       onDelete: () => _confirmDelete(context, keys),
@@ -207,11 +223,13 @@ class _KeyAvailableCard extends StatelessWidget {
   const _KeyAvailableCard({
     super.key,
     required this.info,
+    required this.isDemo,
     required this.onChange,
     required this.onDelete,
   });
 
-  final EncryptionKeyInfo info;
+  final KeyMetadata info;
+  final bool isDemo;
   final VoidCallback onChange;
   final VoidCallback onDelete;
 
@@ -243,11 +261,11 @@ class _KeyAvailableCard extends StatelessWidget {
               icon: Icons.vpn_key_rounded,
               color: Colors.green.shade600,
               title: 'Key available',
-              subtitle: info.isDemo
+              subtitle: isDemo
                   ? 'Demo preview — not a real key'
                   : 'Ready to encrypt notes',
             ),
-            if (info.isDemo) ...[
+            if (isDemo) ...[
               const SizedBox(height: 16),
               Container(
                 padding: const EdgeInsets.all(12),
@@ -264,7 +282,9 @@ class _KeyAvailableCard extends StatelessWidget {
             ],
             const SizedBox(height: 12),
             detail('Status', 'Available'),
+            detail('Name', info.name),
             detail('Key ID', info.id),
+            detail('Version', '${info.version}'),
             detail('Created', DateFormatter.full(info.createdAt)),
             detail('Key values', 'Hidden'),
             const SizedBox(height: 16),

@@ -7,7 +7,6 @@ import '../../../core/widgets/dialogs.dart';
 import '../../../core/widgets/section_header.dart';
 import '../../../routes/app_routes.dart';
 import '../../key_management/providers/key_provider.dart';
-import '../../notes/providers/notes_provider.dart';
 import '../../notes/widgets/note_color_picker.dart';
 import '../providers/settings_provider.dart';
 
@@ -56,6 +55,23 @@ class SettingsScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.only(bottom: 32),
         children: [
+          if (settings.saveError != null)
+            Container(
+              key: const Key('settings-save-error'),
+              margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.errorContainer,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '${settings.saveError!.message} Changes apply now but may '
+                'reset when the app restarts.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onErrorContainer,
+                ),
+              ),
+            ),
           const SectionHeader('Appearance'),
           SectionCard(
             children: [
@@ -173,17 +189,17 @@ class SettingsScreen extends StatelessWidget {
               ListTile(
                 leading: const Icon(Icons.storage_outlined),
                 title: const Text('Storage'),
-                subtitle: const Text('Notes are kept for this session only'),
+                subtitle: const Text('Saved on this device'),
                 trailing: const Icon(Icons.info_outline_rounded),
                 onTap: () => showInfoDialog(
                   context,
                   icon: Icons.storage_outlined,
                   title: 'Storage',
                   message:
-                      'In this version, notes are kept in memory while the '
-                      'app is open. They are lost when the app is closed. '
-                      'Permanent on-device storage is planned for a future '
-                      'update.',
+                      'Notes, settings and key information are saved in a '
+                      'private database on this device and stay after the '
+                      'app is closed. Notes are stored as normal, readable '
+                      'text: encryption is not available yet.',
                 ),
               ),
             ],
@@ -197,7 +213,7 @@ class SettingsScreen extends StatelessWidget {
                 subtitle: Text(
                   !keys.hasKey
                       ? 'No key created (optional)'
-                      : keys.keyInfo!.isDemo
+                      : keys.isDemo
                       ? 'Demo key preview'
                       : 'Key available',
                 ),
