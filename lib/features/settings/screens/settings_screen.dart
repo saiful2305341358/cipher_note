@@ -214,9 +214,9 @@ class SettingsScreen extends StatelessWidget {
                 subtitle: Text(
                   !keys.hasKeys
                       ? 'No key created (optional)'
-                      : keys.keys.length == 1
+                      : keys.groups.length == 1
                       ? '1 key'
-                      : '${keys.keys.length} keys',
+                      : '${keys.groups.length} keys',
                 ),
                 trailing: const Icon(Icons.chevron_right_rounded),
                 onTap: () => AppRoutes.open(context, AppRoutes.keyManagement),

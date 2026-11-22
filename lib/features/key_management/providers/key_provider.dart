@@ -5,8 +5,20 @@ import '../../../core/errors/error_reporter.dart';
 import '../../../data/models/key_metadata.dart';
 import '../../encryption/data/key_service.dart';
 
+/// One logical key and its versions (newest first).
+class KeyGroup {
+  const KeyGroup(this.versions);
+
+  final List<KeyMetadata> versions;
+
+  String get id => versions.first.id;
+  String get name => versions.first.name;
+  KeyMetadata get latest => versions.first;
+  bool get hasActiveVersion => versions.any((v) => v.isActive);
+}
+
 /// Key list state for the UI. All work is done by [KeyService]; this class
-/// only holds the loaded metadata (never key material).
+/// only holds loaded metadata (never key material).
 class KeyProvider extends ChangeNotifier {
   KeyProvider(this._service);
 
@@ -17,17 +29,34 @@ class KeyProvider extends ChangeNotifier {
   bool _busy = false;
   AppException? _error;
 
-  /// Every key, the active key first.
+  /// Every key version, grouped by key, newest version first.
   List<KeyMetadata> get keys => _keys;
+
+  /// Keys with their versions, in display order.
+  List<KeyGroup> get groups {
+    final order = <String>[];
+    final byId = <String, List<KeyMetadata>>{};
+    for (final k in _keys) {
+      byId
+          .putIfAbsent(k.id, () {
+            order.add(k.id);
+            return [];
+          })
+          .add(k);
+    }
+    return [for (final id in order) KeyGroup(byId[id]!)];
+  }
+
   bool get isLoaded => _isLoaded;
   bool get hasKeys => _keys.isNotEmpty;
 
-  /// True while a create, activate or delete operation runs.
+  /// True while a create, version, activate or delete operation runs.
   bool get isBusy => _busy;
 
   /// Set when loading key information failed.
   AppException? get error => _error;
 
+  /// The version used by default for new encryption.
   KeyMetadata? get activeKey {
     for (final k in _keys) {
       if (k.isActive) return k;
@@ -35,19 +64,26 @@ class KeyProvider extends ChangeNotifier {
     return _keys.isEmpty ? null : _keys.first;
   }
 
-  KeyMetadata? keyById(String? id) {
-    if (id == null) return null;
+  /// Exactly this key version, or `null`.
+  KeyMetadata? version(String? keyId, int? version) {
+    if (keyId == null || version == null) return null;
     for (final k in _keys) {
-      if (k.id == id) return k;
+      if (k.id == keyId && k.version == version) return k;
+    }
+    return null;
+  }
+
+  /// Name of a key (any version), or `null` if no version exists.
+  String? nameOf(String? keyId) {
+    for (final k in _keys) {
+      if (k.id == keyId) return k.name;
     }
     return null;
   }
 
   /// Whether metadata exists for exactly this key id and version.
-  bool isAvailable(String? keyId, int? version) {
-    final key = keyById(keyId);
-    return key != null && key.version == version;
-  }
+  bool isAvailable(String? keyId, int? version) =>
+      this.version(keyId, version) != null;
 
   Future<void> load() async {
     try {
@@ -66,15 +102,25 @@ class KeyProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Creates a new key and makes it active. Throws [AppException].
+  /// Checks that a key version can be used (does not throw).
+  Future<KeyValidationStatus> validate(String keyId, int version) =>
+      _service.validate(keyId, version);
+
+  /// Creates a new key (version 1) and makes it active.
   Future<KeyMetadata> createKey(String name) =>
       _run(() => _service.createKey(name));
 
-  /// Makes [keyId] the default key for encryption. Throws [AppException].
-  Future<void> setActive(String keyId) => _run(() => _service.setActive(keyId));
+  /// Adds a new version to [keyId] and makes it active.
+  Future<KeyMetadata> createNewVersion(String keyId) =>
+      _run(() => _service.createNewVersion(keyId));
 
-  /// Deletes an unused key. Throws [KeyInUseException] if notes use it.
-  Future<void> deleteKey(String keyId) => _run(() => _service.deleteKey(keyId));
+  /// Makes this key version the default for encryption.
+  Future<void> setActive(String keyId, int version) =>
+      _run(() => _service.setActive(keyId, version));
+
+  /// Deletes one unused version. Throws [KeyInUseException] if notes use it.
+  Future<void> deleteVersion(String keyId, int version) =>
+      _run(() => _service.deleteVersion(keyId, version));
 
   Future<T> _run<T>(Future<T> Function() action) async {
     if (_busy) {
@@ -84,8 +130,6 @@ class KeyProvider extends ChangeNotifier {
     notifyListeners();
     try {
       final result = await action();
-      _keys = await _service.listKeys();
-      _error = null;
       return result;
     } on AppException {
       rethrow;
@@ -96,6 +140,13 @@ class KeyProvider extends ChangeNotifier {
         cause: error.runtimeType,
       );
     } finally {
+      // Always reload, so the list matches storage even after a failure.
+      try {
+        _keys = await _service.listKeys();
+        _error = null;
+      } on AppException catch (error) {
+        _error = error;
+      }
       _busy = false;
       notifyListeners();
     }

@@ -45,9 +45,22 @@ class InvalidKeyException extends AppException {
   const InvalidKeyException(super.message, {super.cause});
 }
 
+/// Why a key could not be used.
+enum KeyUnavailableReason {
+  missingMetadata,
+  unsupportedAlgorithm,
+  missingMaterial,
+}
+
 /// The key a note needs is missing, deleted, or has a different version.
 class KeyUnavailableException extends AppException {
-  const KeyUnavailableException(super.message, {super.cause});
+  const KeyUnavailableException(
+    super.message, {
+    super.cause,
+    this.reason = KeyUnavailableReason.missingMetadata,
+  });
+
+  final KeyUnavailableReason reason;
 }
 
 /// Stored ciphertext is not in a format this app can read.

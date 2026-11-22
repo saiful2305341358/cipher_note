@@ -1,6 +1,8 @@
 import 'package:hive_ce/hive_ce.dart';
 
+import '../../data/models/key_metadata.dart';
 import '../../data/models/note_model.dart';
+import '../../data/repositories/key_metadata_repository.dart';
 import '../errors/app_exceptions.dart';
 import 'database_constants.dart';
 
@@ -41,10 +43,29 @@ class DatabaseMigrator {
   ///   rewritten. The step only checks that no v1 note claims to be
   ///   encrypted (encryption did not exist in v1) and fails rather than
   ///   guess if one does.
+  /// * v3: key metadata becomes versioned. Records move from being stored
+  ///   under the key id to `<id>@v<version>`, so several versions of one key
+  ///   can coexist. Each record is written under its new name before the
+  ///   old entry is removed, so an interruption never loses a record.
   static final Map<int, MigrationStep> defaultSteps = {
     1: (_) async {},
     2: _checkNoEncryptedNotes,
+    3: _versionKeyMetadataRecords,
   };
+
+  static Future<void> _versionKeyMetadataRecords(
+    MigrationContext context,
+  ) async {
+    final box = context.keyMetadata;
+    for (final oldKey in box.keys.toList()) {
+      final value = box.get(oldKey);
+      if (value is! KeyMetadata) continue;
+      final newKey = KeyMetadataRepository.recordKey(value.id, value.version);
+      if (oldKey == newKey) continue;
+      if (!box.containsKey(newKey)) await box.put(newKey, value);
+      await box.delete(oldKey);
+    }
+  }
 
   static Future<void> _checkNoEncryptedNotes(MigrationContext context) async {
     for (final value in context.notes.values) {

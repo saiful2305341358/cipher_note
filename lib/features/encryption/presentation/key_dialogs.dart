@@ -5,6 +5,7 @@ import '../../../core/errors/app_exceptions.dart';
 import '../../../core/utils/date_formatter.dart';
 import '../../../data/models/key_metadata.dart';
 import '../../key_management/providers/key_provider.dart';
+import '../data/key_service.dart';
 
 /// Short reminder shown wherever keys are created or used.
 const String hillCipherWarning =
@@ -124,11 +125,18 @@ class _CreateKeyDialogState extends State<_CreateKeyDialog> {
   }
 }
 
-/// Lets the user pick the key to encrypt with. If there are no keys, offers
-/// to create one. Returns `null` if cancelled.
+/// Lets the user pick the key version to encrypt with. If there are no
+/// keys, offers to create one. Every version is validated (metadata, secure
+/// storage, matrix) and invalid ones cannot be chosen. Returns `null` if
+/// cancelled.
+///
+/// [preselectedKeyId] / [preselectedVersion] select a version initially
+/// (for example the version an encrypted note already uses); otherwise the
+/// active version is selected.
 Future<KeyMetadata?> showKeyPicker(
   BuildContext context, {
   String? preselectedKeyId,
+  int? preselectedVersion,
 }) async {
   final keys = context.read<KeyProvider>();
   if (!keys.hasKeys) {
@@ -136,10 +144,9 @@ Future<KeyMetadata?> showKeyPicker(
       context: context,
       builder: (context) => AlertDialog(
         icon: const Icon(Icons.key_outlined),
-        title: const Text('No encryption key yet'),
+        title: const Text('No Encryption Key Found'),
         content: const Text(
-          'You need a key to encrypt notes. Create one now? '
-          'You can keep writing normal notes without a key.',
+          'Create an encryption key before encrypting this note.',
         ),
         actions: [
           TextButton(
@@ -149,53 +156,82 @@ Future<KeyMetadata?> showKeyPicker(
           FilledButton(
             key: const Key('no-key-create'),
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Create key'),
+            child: const Text('Create Key'),
           ),
         ],
       ),
     );
     if (create != true || !context.mounted) return null;
-    return showCreateKeyDialog(context);
+    final created = await showCreateKeyDialog(context);
+    if (created == null || !context.mounted) return null;
+    // A brand-new key still goes through validation before use.
+    final status = await keys.validate(created.id, created.version);
+    if (!status.isValid) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(status.message)));
+      }
+      return null;
+    }
+    return created;
   }
 
+  final initial =
+      keys.version(preselectedKeyId, preselectedVersion) ?? keys.activeKey;
   return showModalBottomSheet<KeyMetadata>(
     context: context,
     isScrollControlled: true,
-    builder: (_) => _KeyPickerSheet(
-      preselectedKeyId: preselectedKeyId ?? keys.activeKey?.id,
-    ),
+    builder: (_) => _KeyPickerSheet(initial: initial),
   );
 }
 
-class _KeyPickerSheet extends StatefulWidget {
-  const _KeyPickerSheet({required this.preselectedKeyId});
+String _pickId(KeyMetadata k) => '${k.id}@v${k.version}';
 
-  final String? preselectedKeyId;
+class _KeyPickerSheet extends StatefulWidget {
+  const _KeyPickerSheet({required this.initial});
+
+  final KeyMetadata? initial;
 
   @override
   State<_KeyPickerSheet> createState() => _KeyPickerSheetState();
 }
 
 class _KeyPickerSheetState extends State<_KeyPickerSheet> {
-  String? _selectedId;
+  String? _selected;
+
+  /// Validation result per version; missing while still checking.
+  final Map<String, KeyValidationStatus> _status = {};
 
   @override
   void initState() {
     super.initState();
-    _selectedId = widget.preselectedKeyId;
+    final initial = widget.initial;
+    _selected = initial == null ? null : _pickId(initial);
+    _validateAll();
+  }
+
+  Future<void> _validateAll() async {
+    final provider = context.read<KeyProvider>();
+    for (final k in provider.keys) {
+      final id = _pickId(k);
+      if (_status.containsKey(id)) continue;
+      final status = await provider.validate(k.id, k.version);
+      if (!mounted) return;
+      setState(() => _status[id] = status);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final keys = context.watch<KeyProvider>().keys;
-    if (keys.every((k) => k.id != _selectedId)) {
-      _selectedId = keys.isEmpty ? null : keys.first.id;
-    }
+    final provider = context.watch<KeyProvider>();
+    final keys = provider.keys;
     KeyMetadata? selected;
     for (final k in keys) {
-      if (k.id == _selectedId) selected = k;
+      if (_pickId(k) == _selected) selected = k;
     }
+    final selectedStatus = selected == null ? null : _status[_pickId(selected)];
+    final canUse = selectedStatus?.isValid ?? false;
 
     return SafeArea(
       child: ConstrainedBox(
@@ -217,21 +253,15 @@ class _KeyPickerSheetState extends State<_KeyPickerSheet> {
             ),
             Flexible(
               child: RadioGroup<String>(
-                groupValue: _selectedId,
-                onChanged: (id) => setState(() => _selectedId = id),
+                groupValue: _selected,
+                onChanged: (id) => setState(() => _selected = id),
                 child: ListView(
                   shrinkWrap: true,
                   children: [
                     for (final key in keys)
-                      RadioListTile<String>(
-                        key: ValueKey('pick-key-${key.id}'),
-                        value: key.id,
-                        title: Text(key.name),
-                        subtitle: Text(
-                          'Version ${key.version} · Created '
-                          '${DateFormatter.full(key.createdAt)}'
-                          '${key.isActive ? ' · Active' : ''}',
-                        ),
+                      _KeyOption(
+                        keyMetadata: key,
+                        status: _status[_pickId(key)],
                       ),
                   ],
                 ),
@@ -242,12 +272,15 @@ class _KeyPickerSheetState extends State<_KeyPickerSheet> {
               child: Row(
                 children: [
                   TextButton.icon(
-                    onPressed: () async {
-                      final created = await showCreateKeyDialog(context);
-                      if (created != null && mounted) {
-                        setState(() => _selectedId = created.id);
-                      }
-                    },
+                    onPressed: provider.isBusy
+                        ? null
+                        : () async {
+                            final created = await showCreateKeyDialog(context);
+                            if (created != null && mounted) {
+                              setState(() => _selected = _pickId(created));
+                              _validateAll();
+                            }
+                          },
                     icon: const Icon(Icons.add_rounded),
                     label: const Text('New key'),
                   ),
@@ -259,9 +292,9 @@ class _KeyPickerSheetState extends State<_KeyPickerSheet> {
                   const SizedBox(width: 8),
                   FilledButton(
                     key: const Key('pick-key-confirm'),
-                    onPressed: selected == null
-                        ? null
-                        : () => Navigator.of(context).pop(selected),
+                    onPressed: canUse
+                        ? () => Navigator.of(context).pop(selected)
+                        : null,
                     child: const Text('Use key'),
                   ),
                 ],
@@ -270,6 +303,38 @@ class _KeyPickerSheetState extends State<_KeyPickerSheet> {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _KeyOption extends StatelessWidget {
+  const _KeyOption({required this.keyMetadata, required this.status});
+
+  final KeyMetadata keyMetadata;
+  final KeyValidationStatus? status;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final key = keyMetadata;
+    final invalid = status != null && !status!.isValid;
+    final details =
+        'Version ${key.version} · Created ${DateFormatter.full(key.createdAt)}'
+        '${key.isActive ? ' · Active' : ''}';
+    return RadioListTile<String>(
+      key: ValueKey('pick-key-${key.id}-v${key.version}'),
+      value: _pickId(key),
+      enabled: !invalid,
+      title: Text(key.name),
+      subtitle: Text(
+        status == null
+            ? '$details\nChecking…'
+            : invalid
+            ? '$details\n${status!.message}'
+            : details,
+        style: invalid ? TextStyle(color: scheme.error) : null,
+      ),
+      isThreeLine: status == null || invalid,
     );
   }
 }
