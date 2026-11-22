@@ -2,6 +2,7 @@ import '../../data/models/app_settings.dart';
 import '../../data/repositories/hive_note_repository.dart';
 import '../../data/repositories/key_metadata_repository.dart';
 import '../../data/repositories/note_repository.dart';
+import '../../data/repositories/secure_key_store.dart';
 import '../../data/repositories/settings_repository.dart';
 import '../database/hive_service.dart';
 import '../errors/app_exceptions.dart';
@@ -14,6 +15,7 @@ class AppDependencies {
     required this.noteRepository,
     required this.keyRepository,
     required this.settingsRepository,
+    required this.secureKeyStore,
     required this.initialSettings,
   });
 
@@ -22,6 +24,7 @@ class AppDependencies {
   final NoteRepository noteRepository;
   final KeyMetadataRepository keyRepository;
   final SettingsRepository settingsRepository;
+  final SecureKeyStore secureKeyStore;
   final AppSettings initialSettings;
 }
 
@@ -62,6 +65,7 @@ class AppInitializer {
       noteRepository: HiveNoteRepository(database.notes),
       keyRepository: HiveKeyMetadataRepository(database.keyMetadata),
       settingsRepository: settingsRepository,
+      secureKeyStore: FlutterSecureKeyStore(),
       initialSettings: settings,
     );
   }

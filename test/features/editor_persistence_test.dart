@@ -7,6 +7,7 @@ import 'package:cipher_note/core/startup/app_initializer.dart';
 import 'package:cipher_note/core/startup/startup_error_app.dart';
 import 'package:cipher_note/data/models/note_model.dart';
 import 'package:cipher_note/data/repositories/key_metadata_repository.dart';
+import 'package:cipher_note/data/repositories/secure_key_store.dart';
 import 'package:cipher_note/features/notes/providers/notes_provider.dart';
 import 'package:cipher_note/features/settings/providers/settings_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -290,6 +291,7 @@ void main() {
         ]),
         keyRepository: InMemoryKeyMetadataRepository(),
         settingsRepository: RecordingSettingsRepository(),
+        secureKeyStore: InMemorySecureKeyStore(),
         initialSettings: AppSettings.defaults,
       );
     }

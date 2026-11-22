@@ -198,8 +198,9 @@ class SettingsScreen extends StatelessWidget {
                   message:
                       'Notes, settings and key information are saved in a '
                       'private database on this device and stay after the '
-                      'app is closed. Notes are stored as normal, readable '
-                      'text: encryption is not available yet.',
+                      'app is closed. Notes are stored as readable text '
+                      'unless you encrypt them. Encryption keys are kept '
+                      'separately in secure storage.',
                 ),
               ),
             ],
@@ -211,11 +212,11 @@ class SettingsScreen extends StatelessWidget {
                 leading: const Icon(Icons.key_outlined),
                 title: const Text('Key Management'),
                 subtitle: Text(
-                  !keys.hasKey
+                  !keys.hasKeys
                       ? 'No key created (optional)'
-                      : keys.isDemo
-                      ? 'Demo key preview'
-                      : 'Key available',
+                      : keys.keys.length == 1
+                      ? '1 key'
+                      : '${keys.keys.length} keys',
                 ),
                 trailing: const Icon(Icons.chevron_right_rounded),
                 onTap: () => AppRoutes.open(context, AppRoutes.keyManagement),

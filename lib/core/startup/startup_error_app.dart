@@ -119,6 +119,7 @@ Widget buildApp(AppDependencies deps) => CipherNoteApp(
   noteRepository: deps.noteRepository,
   keyRepository: deps.keyRepository,
   settingsRepository: deps.settingsRepository,
+  secureKeyStore: deps.secureKeyStore,
   settings: SettingsProvider(
     repository: deps.settingsRepository,
     initial: deps.initialSettings,

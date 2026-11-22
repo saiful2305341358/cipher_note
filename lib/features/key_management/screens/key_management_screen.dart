@@ -1,47 +1,75 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
+import '../../../core/errors/app_exceptions.dart';
 import '../../../core/utils/date_formatter.dart';
 import '../../../core/widgets/dialogs.dart';
 import '../../../core/widgets/section_header.dart';
-import '../../../core/errors/app_exceptions.dart';
 import '../../../data/models/key_metadata.dart';
 import '../../../routes/app_routes.dart';
+import '../../encryption/presentation/key_dialogs.dart';
 import '../providers/key_provider.dart';
 
-/// Shows the status of the (future) Hill Cipher key.
-///
-/// No cryptographic work happens here yet. A clearly-labelled demo
-/// state can be shown to preview how an existing key will look.
+enum _KeyAction { activate, delete }
+
+/// Lists Hill Cipher keys and lets the user create, activate and delete
+/// them. Key values are never shown.
 class KeyManagementScreen extends StatelessWidget {
   const KeyManagementScreen({super.key});
 
-  static const String _futureMessage =
-      'Key generation will be available in a future update.';
-
-  void _showFutureDialog(BuildContext context, {String title = 'Coming soon'}) {
-    showInfoDialog(
-      context,
-      icon: Icons.key_outlined,
-      title: title,
-      message: _futureMessage,
-    );
+  Future<void> _create(BuildContext context) async {
+    final key = await showCreateKeyDialog(context);
+    if (key != null && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Key “${key.name}” created and set as active')),
+      );
+    }
   }
 
-  Future<void> _confirmDelete(BuildContext context, KeyProvider keys) async {
-    final confirmed = await showConfirmDialog(
-      context,
-      title: 'Delete key?',
-      message: keys.isDemo
-          ? 'This removes the demo key preview. No notes are affected.'
-          : 'This removes the encryption key information.',
-      confirmLabel: 'Delete',
-      destructive: true,
-    );
-    if (!confirmed || !context.mounted) return;
+  Future<void> _onAction(
+    BuildContext context,
+    KeyMetadata key,
+    _KeyAction action,
+  ) async {
+    final provider = context.read<KeyProvider>();
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await keys.deleteKey();
+      switch (action) {
+        case _KeyAction.activate:
+          await provider.setActive(key.id);
+          messenger.showSnackBar(
+            SnackBar(content: Text('“${key.name}” is now the active key')),
+          );
+        case _KeyAction.delete:
+          final confirmed = await showConfirmDialog(
+            context,
+            title: 'Delete key?',
+            message:
+                'The key “${key.name}” will be removed from this device. '
+                'This cannot be undone. Keys used by encrypted notes cannot '
+                'be deleted.',
+            confirmLabel: 'Delete',
+            destructive: true,
+          );
+          if (!confirmed) return;
+          await provider.deleteKey(key.id);
+          messenger.showSnackBar(
+            SnackBar(content: Text('Key “${key.name}” deleted')),
+          );
+      }
+    } on KeyInUseException catch (error) {
+      if (!context.mounted) return;
+      await showInfoDialog(
+        context,
+        icon: Icons.lock_outline_rounded,
+        title: 'Key is in use',
+        message:
+            '${error.message} Deleting it would make '
+            '${error.noteCount == 1 ? 'that note' : 'those notes'} '
+            'impossible to read.\n\nTo delete this key, open each note, '
+            'decrypt it, and save it as plain text or encrypt it with a '
+            'different key.',
+      );
     } on AppException catch (error) {
       messenger.showSnackBar(SnackBar(content: Text(error.message)));
     }
@@ -55,19 +83,51 @@ class KeyManagementScreen extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Key Management')),
+      floatingActionButton: keys.hasKeys
+          ? FloatingActionButton.extended(
+              key: const Key('create-key'),
+              onPressed: keys.isBusy ? null : () => _create(context),
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('New key'),
+            )
+          : null,
       body: ListView(
-        padding: const EdgeInsets.only(bottom: 32),
+        padding: const EdgeInsets.only(bottom: 96),
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
             child: Text(
-              'An encryption key is a secret that you will create yourself. '
-              'It will let you lock individual notes so that they cannot be '
-              'read without the key. Creating a key is optional — you can '
-              'keep writing normal notes without one.',
+              'A key is a secret that locks and unlocks your encrypted '
+              'notes. Keys are created randomly and kept in secure storage '
+              'on this device. Creating a key is optional — you can keep '
+              'writing normal notes without one.',
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: scheme.onSurfaceVariant,
                 height: 1.5,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: scheme.errorContainer.withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.warning_amber_rounded, color: scheme.error),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      hillCipherWarning,
+                      style: theme.textTheme.bodySmall?.copyWith(height: 1.4),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -79,28 +139,58 @@ class KeyManagementScreen extends StatelessWidget {
                 style: theme.textTheme.bodySmall?.copyWith(color: scheme.error),
               ),
             ),
-          const SectionHeader('Current key'),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 200),
-              child: keys.hasKey
-                  ? _KeyAvailableCard(
-                      key: const ValueKey('key-available'),
-                      info: keys.keyInfo!,
-                      isDemo: keys.isDemo,
-                      onChange: () =>
-                          _showFutureDialog(context, title: 'Change key'),
-                      onDelete: () => _confirmDelete(context, keys),
-                    )
-                  : _NoKeyCard(
-                      key: const ValueKey('no-key'),
-                      onGenerate: () =>
-                          _showFutureDialog(context, title: 'Generate key'),
-                      onPreview: keys.showDemoKey,
-                    ),
+          const SectionHeader('Your keys'),
+          if (!keys.isLoaded && keys.error == null)
+            const Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (!keys.hasKeys)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.key_off_outlined,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 12),
+                          const Expanded(
+                            child: Text(
+                              'No encryption key has been created yet.',
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      FilledButton.icon(
+                        key: const Key('generate-key'),
+                        onPressed: keys.isBusy ? null : () => _create(context),
+                        icon: const Icon(Icons.add_rounded),
+                        label: const Text('Generate New Key'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            )
+          else
+            SectionCard(
+              children: [
+                for (final key in keys.keys)
+                  _KeyTile(
+                    keyMetadata: key,
+                    enabled: !keys.isBusy,
+                    onAction: (action) => _onAction(context, key, action),
+                  ),
+              ],
             ),
-          ),
           const SectionHeader('Learn more'),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -109,7 +199,7 @@ class KeyManagementScreen extends StatelessWidget {
               child: ListTile(
                 leading: const Icon(Icons.shield_outlined),
                 title: const Text('About encryption'),
-                subtitle: const Text('How note encryption will work'),
+                subtitle: const Text('How note encryption works'),
                 trailing: const Icon(Icons.chevron_right_rounded),
                 onTap: () => AppRoutes.open(context, AppRoutes.encryptionInfo),
               ),
@@ -121,202 +211,71 @@ class KeyManagementScreen extends StatelessWidget {
   }
 }
 
-class _StatusRow extends StatelessWidget {
-  const _StatusRow({
-    required this.icon,
-    required this.color,
-    required this.title,
-    required this.subtitle,
+class _KeyTile extends StatelessWidget {
+  const _KeyTile({
+    required this.keyMetadata,
+    required this.enabled,
+    required this.onAction,
   });
 
-  final IconData icon;
-  final Color color;
-  final String title;
-  final String subtitle;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Row(
-      children: [
-        Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Icon(icon, color: color),
-        ),
-        const SizedBox(width: 16),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                subtitle,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _NoKeyCard extends StatelessWidget {
-  const _NoKeyCard({
-    super.key,
-    required this.onGenerate,
-    required this.onPreview,
-  });
-
-  final VoidCallback onGenerate;
-  final VoidCallback onPreview;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _StatusRow(
-              icon: Icons.key_off_outlined,
-              color: theme.colorScheme.onSurfaceVariant,
-              title: 'No key',
-              subtitle: 'No encryption key has been created yet.',
-            ),
-            const SizedBox(height: 20),
-            FilledButton.icon(
-              key: const Key('generate-key'),
-              onPressed: onGenerate,
-              icon: const Icon(Icons.add_rounded),
-              label: const Text('Generate New Key'),
-            ),
-            const SizedBox(height: 4),
-            TextButton(
-              key: const Key('preview-demo-key'),
-              onPressed: onPreview,
-              child: const Text('Preview how a saved key will look (demo)'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _KeyAvailableCard extends StatelessWidget {
-  const _KeyAvailableCard({
-    super.key,
-    required this.info,
-    required this.isDemo,
-    required this.onChange,
-    required this.onDelete,
-  });
-
-  final KeyMetadata info;
-  final bool isDemo;
-  final VoidCallback onChange;
-  final VoidCallback onDelete;
+  final KeyMetadata keyMetadata;
+  final bool enabled;
+  final ValueChanged<_KeyAction> onAction;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final labelStyle = theme.textTheme.bodyMedium?.copyWith(
-      color: scheme.onSurfaceVariant,
-    );
-
-    Widget detail(String label, String value) => Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: [
-          SizedBox(width: 110, child: Text(label, style: labelStyle)),
-          Expanded(child: Text(value, style: theme.textTheme.bodyMedium)),
-        ],
+    final key = keyMetadata;
+    return ListTile(
+      key: ValueKey('key-tile-${key.id}'),
+      leading: Icon(
+        key.isActive ? Icons.vpn_key_rounded : Icons.vpn_key_outlined,
+        color: key.isActive ? scheme.primary : null,
       ),
-    );
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _StatusRow(
-              icon: Icons.vpn_key_rounded,
-              color: Colors.green.shade600,
-              title: 'Key available',
-              subtitle: isDemo
-                  ? 'Demo preview — not a real key'
-                  : 'Ready to encrypt notes',
-            ),
-            if (isDemo) ...[
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: scheme.primary.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  'This is example data to preview the screen. No key exists '
-                  'and nothing can be encrypted yet.',
-                  style: theme.textTheme.bodySmall?.copyWith(height: 1.4),
+      title: Row(
+        children: [
+          Flexible(child: Text(key.name, overflow: TextOverflow.ellipsis)),
+          if (key.isActive) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: scheme.primary.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'Active',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: scheme.primary,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-            ],
-            const SizedBox(height: 12),
-            detail('Status', 'Available'),
-            detail('Name', info.name),
-            detail('Key ID', info.id),
-            detail('Version', '${info.version}'),
-            detail('Created', DateFormatter.full(info.createdAt)),
-            detail('Key values', 'Hidden'),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    key: const Key('change-key'),
-                    onPressed: onChange,
-                    icon: const Icon(Icons.sync_rounded),
-                    label: const Text('Change Key'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    key: const Key('delete-key'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: scheme.error,
-                      side: BorderSide(
-                        color: scheme.error.withValues(alpha: 0.5),
-                      ),
-                    ),
-                    onPressed: onDelete,
-                    icon: const Icon(Icons.delete_outline_rounded),
-                    label: const Text('Delete Key'),
-                  ),
-                ),
-              ],
             ),
           ],
-        ),
+        ],
+      ),
+      subtitle: Text(
+        'Hill Cipher 2×2 · Version ${key.version}\n'
+        'Created ${DateFormatter.full(key.createdAt)}',
+      ),
+      isThreeLine: true,
+      trailing: PopupMenuButton<_KeyAction>(
+        key: ValueKey('key-menu-${key.id}'),
+        enabled: enabled,
+        tooltip: 'Key options',
+        onSelected: onAction,
+        itemBuilder: (context) => [
+          if (!key.isActive)
+            const PopupMenuItem(
+              value: _KeyAction.activate,
+              child: Text('Set as active'),
+            ),
+          PopupMenuItem(
+            value: _KeyAction.delete,
+            child: Text('Delete', style: TextStyle(color: scheme.error)),
+          ),
+        ],
       ),
     );
   }

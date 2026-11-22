@@ -6,6 +6,7 @@ import '../../../core/widgets/app_logo.dart';
 import '../../../core/widgets/empty_state.dart';
 import '../../../data/models/note_model.dart';
 import '../../../routes/app_routes.dart';
+import '../../key_management/providers/key_provider.dart';
 import '../../notes/providers/notes_provider.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../widgets/note_card.dart';
@@ -156,6 +157,7 @@ class _NotesBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final keys = context.watch<KeyProvider>();
     void open(Note note) => AppRoutes.openEditor(context, noteId: note.id);
 
     final Widget content;
@@ -175,6 +177,10 @@ class _NotesBody extends StatelessWidget {
           note: notes[index],
           isGrid: true,
           showPreview: showPreview,
+          keyAvailable: keys.isAvailable(
+            notes[index].keyId,
+            notes[index].keyVersion,
+          ),
           onTap: () => open(notes[index]),
         ),
       );
@@ -188,6 +194,10 @@ class _NotesBody extends StatelessWidget {
           key: ValueKey(notes[index].id),
           note: notes[index],
           showPreview: showPreview,
+          keyAvailable: keys.isAvailable(
+            notes[index].keyId,
+            notes[index].keyVersion,
+          ),
           onTap: () => open(notes[index]),
         ),
       );

@@ -11,8 +11,10 @@ user-created 2×2 Hill Cipher key is planned for a later phase.
 - **Phase 2 (local storage):** notes, settings and key metadata are saved
   on the device with Hive CE, with autosave and error handling. See
   [docs/PHASE_2_IMPLEMENTATION.md](docs/PHASE_2_IMPLEMENTATION.md).
-- **Not yet implemented:** encryption (Phase 3). Notes are stored as
-  normal, readable text.
+- **Phase 3 (Hill Cipher):** optional word-level 2×2 Hill Cipher
+  encryption of note titles and content, keys in secure storage. See
+  [docs/PHASE_3_IMPLEMENTATION.md](docs/PHASE_3_IMPLEMENTATION.md).
+  **The Hill Cipher is educational, not secure encryption.**
 
 ## Structure
 
@@ -24,6 +26,8 @@ lib/
   core/startup/                database start-up and error screen
   data/models/                 Note, AppSettings, KeyMetadata
   data/repositories/           repository interfaces, Hive and in-memory impls
+  features/encryption/         Hill Cipher (domain), key and note services
+                               (data), key dialogs (presentation)
   features/<feature>/          screens, widgets and providers per feature
   routes/app_routes.dart       named routes and navigation helpers
 ```

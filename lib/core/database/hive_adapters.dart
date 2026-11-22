@@ -2,6 +2,7 @@ import 'package:hive_ce/hive_ce.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../data/models/app_settings.dart';
+import '../../data/models/cipher_format.dart';
 import '../../data/models/key_metadata.dart';
 import '../../data/models/note_model.dart';
 import 'database_constants.dart';
@@ -58,7 +59,7 @@ T _enumByName<T extends Enum>(List<T> values, Object? name, T fallback) {
 
 /// Stores [Note]. Field indexes:
 /// 0 id, 1 title, 2 content, 3 isEncrypted, 4 color, 5 createdAt,
-/// 6 updatedAt, 7 keyId, 8 keyVersion.
+/// 6 updatedAt, 7 keyId, 8 keyVersion, 9 cipherFormat (map, schema v2).
 class NoteAdapter extends TypeAdapter<Note> {
   @override
   int get typeId => DatabaseConstants.noteTypeId;
@@ -80,6 +81,7 @@ class NoteAdapter extends TypeAdapter<Note> {
       updatedAt: updatedAt ?? createdAt ?? fallbackTime,
       keyId: f[7] is String ? f[7] as String : null,
       keyVersion: _intOrNull(f[8]),
+      cipherFormat: CipherFormat.fromMap(f[9]),
     );
   }
 
@@ -94,6 +96,7 @@ class NoteAdapter extends TypeAdapter<Note> {
     6: _encodeTime(obj.updatedAt),
     7: obj.keyId,
     8: obj.keyVersion,
+    9: obj.cipherFormat?.toMap(),
   });
 }
 

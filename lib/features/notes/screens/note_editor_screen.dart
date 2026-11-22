@@ -11,7 +11,11 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/date_formatter.dart';
 import '../../../core/utils/text_utils.dart';
 import '../../../core/widgets/dialogs.dart';
+import '../../../data/models/key_metadata.dart';
 import '../../../data/models/note_model.dart';
+import '../../encryption/data/note_encryption_service.dart';
+import '../../encryption/presentation/key_dialogs.dart';
+import '../../key_management/providers/key_provider.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../providers/notes_provider.dart';
 import '../widgets/note_color_picker.dart';
@@ -23,6 +27,13 @@ enum _LeaveChoice { save, discard, stay }
 enum _FailedSaveChoice { retry, discard, stay }
 
 enum _SaveStatus { idle, saving, saved, failed }
+
+/// plain: normal note. locked: encrypted, showing no text. unlocked: an
+/// encrypted note decrypted into memory for reading/editing; the stored note
+/// stays encrypted until the user explicitly saves.
+enum _EditorMode { plain, locked, unlocked }
+
+enum _UnlockedSaveChoice { encrypt, plain, discard, stay }
 
 /// Creates a new note ([noteId] is null) or edits an existing one.
 ///
@@ -70,6 +81,14 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   AppException? _saveError;
   bool _closing = false;
 
+  _EditorMode _mode = _EditorMode.plain;
+
+  /// True while encrypting or decrypting (blocks repeated taps).
+  bool _busy = false;
+
+  /// Key used to decrypt this note, offered first when encrypting again.
+  String? _unlockedKeyId;
+
   @override
   void initState() {
     super.initState();
@@ -81,8 +100,13 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
         ? null
         : _notes.getById(widget.noteId!);
     _noteId = existing?.id;
-    _savedTitle = _seenTitle = existing?.title ?? '';
-    _savedContent = _seenContent = existing?.content ?? '';
+    if (existing != null && existing.isEncrypted) {
+      _mode = _EditorMode.locked;
+    }
+    // Ciphertext is never loaded into the text fields.
+    final readable = existing != null && !existing.isEncrypted;
+    _savedTitle = _seenTitle = readable ? existing.title : '';
+    _savedContent = _seenContent = readable ? existing.content : '';
     _savedColor = existing?.color ?? _settings.defaultNoteColor;
     _color = _savedColor;
 
@@ -98,7 +122,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     _autoSaveTimer?.cancel();
     // Safety net: if the screen is removed some other way while auto-save
     // is on, still store the latest draft.
-    if (!_closing && _settings.autoSave && _hasUnsavedChanges) {
+    if (!_closing && _autoSaveOn && _hasUnsavedChanges) {
       _saveDraftAfterDispose();
     }
     _titleController.dispose();
@@ -135,7 +159,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed &&
-        _settings.autoSave &&
+        _autoSaveOn &&
         _hasUnsavedChanges &&
         !_closing) {
       _commit();
@@ -143,6 +167,10 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   }
 
   Note? get _note => _noteId == null ? null : _notes.getById(_noteId!);
+
+  /// Auto-save only ever writes plain notes. Decrypted text is never saved
+  /// automatically, so it cannot reach storage without an explicit choice.
+  bool get _autoSaveOn => _settings.autoSave && _mode == _EditorMode.plain;
 
   bool get _isNew => _noteId == null;
 
@@ -171,7 +199,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     _seenContent = content;
     // Rebuild so the Encrypt button, status and pop guard stay up to date.
     setState(() {});
-    if (_settings.autoSave) _scheduleAutoSave();
+    if (_autoSaveOn) _scheduleAutoSave();
   }
 
   /// Debounce: write once typing pauses instead of on every keystroke.
@@ -191,6 +219,9 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
 
   Future<bool> _performSave() async {
     if (!_hasUnsavedChanges) return true;
+    // Only plain notes are saved here; encrypted notes are written by
+    // [_encrypt] and [_saveUnlockedAsPlain].
+    if (_mode != _EditorMode.plain) return false;
     final title = _titleController.text;
     final content = _contentController.text;
     final color = _color;
@@ -236,6 +267,17 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   Future<void> _onSavePressed() async {
     FocusScope.of(context).unfocus();
     final messenger = ScaffoldMessenger.of(context);
+    if (_mode == _EditorMode.locked) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('This note is encrypted and saved.')),
+      );
+      return;
+    }
+    if (_mode == _EditorMode.unlocked) {
+      final choice = await _askUnlockedSave(allowDiscard: false);
+      if (choice != null) await _applyUnlockedChoice(choice);
+      return;
+    }
     if (_isNew && _draftIsEmpty) {
       messenger.showSnackBar(
         const SnackBar(content: Text('Write something before saving.')),
@@ -265,7 +307,18 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
       return;
     }
 
-    if (_settings.autoSave) {
+    if (_mode == _EditorMode.unlocked) {
+      final choice = await _askUnlockedSave(allowDiscard: true);
+      if (!mounted || choice == null) return;
+      if (choice == _UnlockedSaveChoice.discard) {
+        _close(navigator);
+        return;
+      }
+      if (await _applyUnlockedChoice(choice) && mounted) _close(navigator);
+      return;
+    }
+
+    if (_autoSaveOn) {
       // Flush the pending autosave before leaving.
       while (mounted) {
         if (await _commit()) {
@@ -365,8 +418,14 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
       selected: _color,
       onSelected: (value) {
         setState(() => _color = value);
+        if (_mode != _EditorMode.plain) {
+          // The colour is not secret: change it without touching the
+          // encrypted text.
+          _saveColorOnly(value);
+          return;
+        }
         // An existing note updates on the home screen right away.
-        if (_settings.autoSave && !(_isNew && _draftIsEmpty)) _commit();
+        if (_autoSaveOn && !(_isNew && _draftIsEmpty)) _commit();
       },
     );
   }
@@ -425,6 +484,12 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   }
 
   Future<void> _share() async {
+    if (_mode == _EditorMode.locked) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Decrypt the note to share its text.')),
+      );
+      return;
+    }
     final title = _titleController.text.trim();
     final content = _contentController.text.trim();
     final text = [title, content].where((s) => s.isNotEmpty).join('\n\n');
@@ -491,10 +556,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
       ('Words', '${TextUtils.wordCount(content)}'),
       ('Characters', '${TextUtils.characterCount(content)}'),
       ('Color', AppColors.noteColorFor(_color).name),
-      (
-        'Encryption',
-        (note?.isEncrypted ?? false) ? 'Encrypted' : 'Not encrypted',
-      ),
+      ('Encryption', _encryptionDescription(note)),
       ('Storage', note == null ? 'Not saved yet' : 'Saved on this device'),
     ];
     await showDialog<void>(
@@ -553,16 +615,228 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     }
   }
 
-  void _showEncryptInfo() {
-    showInfoDialog(
+  String _encryptionDescription(Note? note) {
+    if (note == null || !note.isEncrypted) return 'Not encrypted';
+    final key = context.read<KeyProvider>().keyById(note.keyId);
+    final keyText = key == null || key.version != note.keyVersion
+        ? 'key unavailable'
+        : 'key “${key.name}” v${key.version}';
+    return 'Hill Cipher 2×2, $keyText';
+  }
+
+  /// Puts text into the fields without it counting as an edit.
+  void _setDraftText(String title, String content) {
+    _savedTitle = _seenTitle = title;
+    _savedContent = _seenContent = content;
+    _titleController.text = title;
+    _contentController.text = content;
+  }
+
+  Future<void> _saveColorOnly(int color) async {
+    final id = _noteId;
+    if (id == null) return;
+    try {
+      await _notes.changeColor(id, color);
+      _savedColor = color;
+    } on AppException catch (error) {
+      if (!mounted) return;
+      setState(() => _color = _savedColor);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error.message)));
+    }
+  }
+
+  Future<void> _showError(String title, AppException error) => showInfoDialog(
+    context,
+    icon: Icons.error_outline_rounded,
+    title: title,
+    message: '${error.message}\n\nThe stored note has not been changed.',
+  );
+
+  /// Decrypts the stored note into the editor. The stored ciphertext is not
+  /// changed.
+  Future<void> _decrypt() async {
+    final note = _note;
+    if (_busy || note == null || !note.isEncrypted) return;
+    setState(() => _busy = true);
+    try {
+      final text = await context.read<NoteEncryptionService>().decrypt(note);
+      if (!mounted) return;
+      setState(() {
+        _setDraftText(text.title, text.content);
+        _unlockedKeyId = note.keyId;
+        _mode = _EditorMode.unlocked;
+      });
+    } on AppException catch (error) {
+      // Stop the progress indicator before showing the error.
+      if (mounted) setState(() => _busy = false);
+      if (mounted) await _showError('Could not decrypt', error);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Encrypts the current text with a chosen key and stores it, replacing
+  /// the stored note in a single write. Returns true on success. If
+  /// anything fails, the stored note is unchanged.
+  Future<bool> _encrypt() async {
+    if (_busy) return false;
+    final messenger = ScaffoldMessenger.of(context);
+
+    // A plain note is saved first (write → save → encrypt).
+    if (_mode == _EditorMode.plain) {
+      if (_isNew && _draftIsEmpty) return false;
+      if (!await _commit()) {
+        messenger.showSnackBar(SnackBar(content: Text(_saveErrorMessage)));
+        return false;
+      }
+    }
+    if (!mounted) return false;
+
+    final KeyMetadata? key = await showKeyPicker(
       context,
-      icon: Icons.lock_outline_rounded,
-      title: 'Encryption coming soon',
-      message:
-          'Encrypting notes with your own Hill Cipher key will be available '
-          'in a future update.\n\nThis note has not been changed and is '
-          'stored as normal, readable text.',
+      preselectedKeyId: _unlockedKeyId,
     );
+    if (key == null || !mounted) return false;
+
+    final confirmed = await showConfirmDialog(
+      context,
+      title: 'Encrypt this note?',
+      message:
+          'The title and text will be replaced with encrypted text. You '
+          'will need the key “${key.name}” to read it again.\n\n'
+          '$hillCipherWarning',
+      confirmLabel: 'Encrypt',
+    );
+    final stored = _note;
+    if (!confirmed || !mounted || stored == null) return false;
+
+    setState(() => _busy = true);
+    try {
+      final encrypted = await context.read<NoteEncryptionService>().encrypt(
+        note: stored,
+        title: _titleController.text,
+        content: _contentController.text,
+        key: key,
+      );
+      await _notes.replaceNote(encrypted);
+      if (!mounted) return true;
+      setState(() {
+        _mode = _EditorMode.locked;
+        _unlockedKeyId = null;
+        _setDraftText('', '');
+        _savedColor = _color;
+        _status = _SaveStatus.idle;
+      });
+      messenger.showSnackBar(
+        SnackBar(content: Text('Note encrypted with “${key.name}”')),
+      );
+      return true;
+    } on AppException catch (error) {
+      // Stop the progress indicator before showing the error.
+      if (mounted) setState(() => _busy = false);
+      if (mounted) await _showError('Could not encrypt', error);
+      return false;
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Saves a decrypted note as readable text (removes its encryption).
+  Future<bool> _saveUnlockedAsPlain() async {
+    final stored = _note;
+    if (stored == null || _busy) return false;
+    final confirmed = await showConfirmDialog(
+      context,
+      title: 'Save as plain text?',
+      message:
+          'This note will no longer be encrypted. Anyone who can open the '
+          'app will be able to read it.',
+      confirmLabel: 'Save as plain text',
+    );
+    if (!confirmed || !mounted) return false;
+    setState(() => _busy = true);
+    try {
+      final title = _titleController.text;
+      final content = _contentController.text;
+      await _notes.replaceNote(
+        stored.toPlain(
+          title: title,
+          content: content,
+          updatedAt: DateTime.now(),
+        ),
+      );
+      if (!mounted) return true;
+      setState(() {
+        _mode = _EditorMode.plain;
+        _unlockedKeyId = null;
+        _savedTitle = title;
+        _savedContent = content;
+        _status = _SaveStatus.saved;
+      });
+      return true;
+    } on AppException catch (error) {
+      // Stop the progress indicator before showing the error.
+      if (mounted) setState(() => _busy = false);
+      if (mounted) await _showError('Could not save', error);
+      return false;
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<_UnlockedSaveChoice?> _askUnlockedSave({required bool allowDiscard}) {
+    return showDialog<_UnlockedSaveChoice>(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: const Icon(Icons.lock_open_rounded),
+        title: const Text('Save changes?'),
+        content: const Text(
+          'This note is stored encrypted. Your changes are only kept while '
+          'it is open. Encrypt it again to keep it locked, or save it as '
+          'plain text.',
+        ),
+        actionsOverflowDirection: VerticalDirection.down,
+        actionsOverflowButtonSpacing: 4,
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_UnlockedSaveChoice.stay),
+            child: const Text('Keep editing'),
+          ),
+          if (allowDiscard)
+            TextButton(
+              onPressed: () =>
+                  Navigator.of(context).pop(_UnlockedSaveChoice.discard),
+              child: const Text('Discard changes'),
+            ),
+          TextButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_UnlockedSaveChoice.plain),
+            child: const Text('Save as plain text'),
+          ),
+          FilledButton(
+            key: const Key('encrypt-and-save'),
+            onPressed: () =>
+                Navigator.of(context).pop(_UnlockedSaveChoice.encrypt),
+            child: const Text('Encrypt & save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Returns true when the note was saved.
+  Future<bool> _applyUnlockedChoice(_UnlockedSaveChoice choice) async {
+    switch (choice) {
+      case _UnlockedSaveChoice.encrypt:
+        return _encrypt();
+      case _UnlockedSaveChoice.plain:
+        return _saveUnlockedAsPlain();
+      case _UnlockedSaveChoice.discard:
+      case _UnlockedSaveChoice.stay:
+        return false;
+    }
   }
 
   @override
@@ -574,10 +848,17 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     final note = _note;
 
     final String status;
-    if (_status == _SaveStatus.failed) {
+    if (_mode == _EditorMode.locked) {
+      status = note == null
+          ? 'Encrypted'
+          : 'Encrypted · Edited ${DateFormatter.full(note.updatedAt)}';
+    } else if (_mode == _EditorMode.unlocked) {
+      status = _hasUnsavedChanges
+          ? 'Decrypted · changes not saved yet'
+          : 'Decrypted · stored encrypted';
+    } else if (_status == _SaveStatus.failed) {
       status = 'Unable to save';
-    } else if (_isSaving ||
-        (_settings.autoSave && _hasUnsavedChanges && !_closing)) {
+    } else if (_isSaving || (_autoSaveOn && _hasUnsavedChanges && !_closing)) {
       status = 'Saving…';
     } else if (_hasUnsavedChanges) {
       status = 'Unsaved changes';
@@ -602,7 +883,11 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
             onPressed: () => Navigator.of(context).maybePop(),
           ),
           title: Text(
-            _isNew ? 'New note' : 'Edit note',
+            switch (_mode) {
+              _EditorMode.locked => 'Encrypted note',
+              _EditorMode.unlocked => 'Decrypted note',
+              _EditorMode.plain => _isNew ? 'New note' : 'Edit note',
+            },
             style: theme.textTheme.titleMedium?.copyWith(
               fontWeight: FontWeight.w600,
             ),
@@ -665,12 +950,22 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
             const SizedBox(width: 4),
           ],
         ),
-        floatingActionButton: _hasMeaningfulContent && !keyboardOpen
+        floatingActionButton:
+            !keyboardOpen &&
+                ((_mode == _EditorMode.plain && _hasMeaningfulContent) ||
+                    _mode == _EditorMode.unlocked)
             ? FloatingActionButton.extended(
                 key: const Key('encrypt-button'),
-                onPressed: _showEncryptInfo,
-                icon: const Icon(Icons.lock_outline_rounded),
-                label: const Text('Encrypt'),
+                onPressed: _busy ? null : _encrypt,
+                icon: _busy
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.lock_outline_rounded),
+                label: Text(
+                  _mode == _EditorMode.unlocked ? 'Encrypt & save' : 'Encrypt',
+                ),
               )
             : null,
         body: SafeArea(
@@ -683,52 +978,61 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
               children: [
                 _SaveStatusLine(
                   text: status,
-                  isError: _status == _SaveStatus.failed,
+                  isError:
+                      _mode == _EditorMode.plain &&
+                      _status == _SaveStatus.failed,
                   onRetry: _commit,
                 ),
                 const SizedBox(height: 8),
-                TextField(
-                  key: const Key('editor-title'),
-                  controller: _titleController,
-                  autofocus: _isNew,
-                  textCapitalization: TextCapitalization.sentences,
-                  textInputAction: TextInputAction.next,
-                  onSubmitted: (_) => _contentFocus.requestFocus(),
-                  maxLines: null,
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    height: 1.35,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: 'Title',
-                    hintStyle: TextStyle(
-                      color: scheme.onSurfaceVariant.withValues(alpha: 0.7),
+                if (_mode == _EditorMode.locked)
+                  _LockedNoteView(note: note, busy: _busy, onDecrypt: _decrypt)
+                else ...[
+                  if (_mode == _EditorMode.unlocked) const _UnlockedBanner(),
+                  TextField(
+                    key: const Key('editor-title'),
+                    controller: _titleController,
+                    autofocus: _isNew,
+                    textCapitalization: TextCapitalization.sentences,
+                    textInputAction: TextInputAction.next,
+                    onSubmitted: (_) => _contentFocus.requestFocus(),
+                    maxLines: null,
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      height: 1.35,
                     ),
-                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                  ),
-                ),
-                Divider(color: AppColors.noteAccent(_color, theme.brightness)),
-                const SizedBox(height: 8),
-                TextField(
-                  key: const Key('editor-content'),
-                  controller: _contentController,
-                  focusNode: _contentFocus,
-                  keyboardType: TextInputType.multiline,
-                  textCapitalization: TextCapitalization.sentences,
-                  maxLines: null,
-                  minLines: 12,
-                  style: theme.textTheme.bodyLarge?.copyWith(
-                    fontSize: 17,
-                    height: 1.6,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: 'Start writing… / লেখা শুরু করুন…',
-                    hintStyle: TextStyle(
-                      color: scheme.onSurfaceVariant.withValues(alpha: 0.7),
+                    decoration: InputDecoration(
+                      hintText: 'Title',
+                      hintStyle: TextStyle(
+                        color: scheme.onSurfaceVariant.withValues(alpha: 0.7),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(vertical: 8),
                     ),
-                    contentPadding: EdgeInsets.zero,
                   ),
-                ),
+                  Divider(
+                    color: AppColors.noteAccent(_color, theme.brightness),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    key: const Key('editor-content'),
+                    controller: _contentController,
+                    focusNode: _contentFocus,
+                    keyboardType: TextInputType.multiline,
+                    textCapitalization: TextCapitalization.sentences,
+                    maxLines: null,
+                    minLines: 12,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      fontSize: 17,
+                      height: 1.6,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: 'Start writing… / লেখা শুরু করুন…',
+                      hintStyle: TextStyle(
+                        color: scheme.onSurfaceVariant.withValues(alpha: 0.7),
+                      ),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -778,6 +1082,118 @@ class _SaveStatusLine extends StatelessWidget {
           child: const Text('Retry'),
         ),
       ],
+    );
+  }
+}
+
+/// Shown instead of the text fields while a note is encrypted.
+class _LockedNoteView extends StatelessWidget {
+  const _LockedNoteView({
+    required this.note,
+    required this.busy,
+    required this.onDecrypt,
+  });
+
+  final Note? note;
+  final bool busy;
+  final VoidCallback onDecrypt;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final keys = context.watch<KeyProvider>();
+    final key = keys.keyById(note?.keyId);
+    final available = keys.isAvailable(note?.keyId, note?.keyVersion);
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 40),
+      child: Column(
+        children: [
+          Container(
+            width: 88,
+            height: 88,
+            decoration: BoxDecoration(
+              color: scheme.primary.withValues(alpha: 0.12),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(Icons.lock_rounded, size: 40, color: scheme.primary),
+          ),
+          const SizedBox(height: 20),
+          Text(
+            'This note is encrypted',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            available
+                ? 'Key: “${key!.name}” · version ${key.version}'
+                : keys.isLoaded
+                ? 'The key for this note is not available on this device.'
+                : 'Checking key…',
+            key: const Key('locked-key-label'),
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: available ? scheme.onSurfaceVariant : scheme.error,
+            ),
+          ),
+          const SizedBox(height: 24),
+          FilledButton.icon(
+            key: const Key('decrypt-button'),
+            onPressed: busy ? null : onDecrypt,
+            icon: busy
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.lock_open_rounded),
+            label: Text(busy ? 'Decrypting…' : 'Decrypt'),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'Hill Cipher is an educational cipher, not strong protection.',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Reminds the user that decrypted text is not saved automatically.
+class _UnlockedBanner extends StatelessWidget {
+  const _UnlockedBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Container(
+      key: const Key('unlocked-banner'),
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: scheme.primary.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.lock_open_rounded, size: 18, color: scheme.primary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Decrypted for editing. Changes are not saved until you '
+              'encrypt again or save as plain text.',
+              style: theme.textTheme.bodySmall?.copyWith(height: 1.35),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

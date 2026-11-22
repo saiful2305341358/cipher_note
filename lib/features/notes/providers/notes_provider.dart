@@ -145,6 +145,14 @@ class NotesProvider extends ChangeNotifier {
     if (existing == null) {
       throw const RecordNotFoundException('This note no longer exists.');
     }
+    if (existing.isEncrypted && (title != null || content != null)) {
+      // Writing readable text into an encrypted note would mix plaintext
+      // and ciphertext. Use [replaceNote] with a fully encrypted or fully
+      // plain note instead.
+      throw const EncryptedNoteLockedException(
+        'Decrypt this note before editing it.',
+      );
+    }
     final changed =
         (title != null && title != existing.title) ||
         (content != null && content != existing.content) ||
@@ -162,6 +170,23 @@ class NotesProvider extends ChangeNotifier {
     notifyListeners();
     return updated;
   });
+
+  /// Stores [note] in place of the existing note with the same id, in one
+  /// write. Used to switch a note between plain and encrypted: the previous
+  /// version stays stored unless this write succeeds.
+  Future<Note> replaceNote(Note note) =>
+      _write('The note could not be saved.', () async {
+        if (!_notes.containsKey(note.id)) {
+          throw const RecordNotFoundException('This note no longer exists.');
+        }
+        await _repository.updateNote(note);
+        _notes[note.id] = note;
+        notifyListeners();
+        return note;
+      });
+
+  /// Number of encrypted notes (they are not included in search).
+  int get encryptedCount => _notes.values.where((n) => n.isEncrypted).length;
 
   /// Changes the colour of a note.
   Future<Note> changeColor(String id, int color) =>
@@ -201,6 +226,6 @@ class NotesProvider extends ChangeNotifier {
 
   /// Notes whose title or content contains [query]. Runs on the loaded
   /// notes so results update instantly while typing; uses the same rules as
-  /// [NoteRepository.searchNotes].
+  /// [NoteRepository.searchNotes]. Encrypted notes are never matched.
   List<Note> search(String query) => NoteSearch.filter(_notes.values, query);
 }

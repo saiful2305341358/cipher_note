@@ -35,3 +35,49 @@ class RecordNotFoundException extends AppException {
 class DuplicateRecordException extends AppException {
   const DuplicateRecordException(super.message);
 }
+
+// ---------------------------------------------------------------------------
+// Encryption errors. Messages never contain plaintext, ciphertext or key
+// values.
+
+/// A key matrix is not usable (out of range or not invertible mod 256).
+class InvalidKeyException extends AppException {
+  const InvalidKeyException(super.message, {super.cause});
+}
+
+/// The key a note needs is missing, deleted, or has a different version.
+class KeyUnavailableException extends AppException {
+  const KeyUnavailableException(super.message, {super.cause});
+}
+
+/// Stored ciphertext is not in a format this app can read.
+class CiphertextFormatException extends AppException {
+  const CiphertextFormatException(super.message, {super.cause});
+}
+
+/// Decryption produced invalid padding or invalid UTF-8.
+class DecryptionFailedException extends AppException {
+  const DecryptionFailedException(super.message, {super.cause});
+}
+
+/// Encryption failed or could not be verified.
+class EncryptionFailedException extends AppException {
+  const EncryptionFailedException(super.message, {super.cause});
+}
+
+/// Platform secure storage could not be read or written.
+class SecureStorageException extends AppException {
+  const SecureStorageException(super.message, {super.cause});
+}
+
+/// A key cannot be deleted because encrypted notes still use it.
+class KeyInUseException extends AppException {
+  const KeyInUseException(super.message, {required this.noteCount});
+
+  final int noteCount;
+}
+
+/// An encrypted note's text was about to be edited without decrypting it.
+class EncryptedNoteLockedException extends AppException {
+  const EncryptedNoteLockedException(super.message);
+}

@@ -2,6 +2,8 @@ import 'package:cipher_note/core/theme/app_colors.dart';
 import 'package:cipher_note/core/errors/app_exceptions.dart';
 import 'package:cipher_note/data/models/key_metadata.dart';
 import 'package:cipher_note/data/repositories/key_metadata_repository.dart';
+import 'package:cipher_note/data/repositories/secure_key_store.dart';
+import 'package:cipher_note/features/encryption/data/key_service.dart';
 import 'package:cipher_note/data/repositories/note_repository.dart';
 import 'package:cipher_note/features/key_management/providers/key_provider.dart';
 import 'package:cipher_note/features/notes/providers/notes_provider.dart';
@@ -270,36 +272,58 @@ void main() {
   });
 
   group('KeyProvider', () {
-    test('has no key by default and can preview/delete a demo key', () async {
-      final repo = InMemoryKeyMetadataRepository();
-      final keys = KeyProvider(repo);
+    KeyProvider build({
+      InMemoryKeyMetadataRepository? metadata,
+      InMemoryNoteRepository? notes,
+    }) => KeyProvider(
+      KeyService(
+        metadata: metadata ?? InMemoryKeyMetadataRepository(),
+        secureStore: InMemorySecureKeyStore(),
+        notes: notes ?? InMemoryNoteRepository(),
+      ),
+    );
+
+    test('starts without keys, creates one and makes it active', () async {
+      final keys = build();
       await keys.load();
-      expect(keys.hasKey, isFalse);
-      keys.showDemoKey();
-      expect(keys.hasKey, isTrue);
-      expect(keys.isDemo, isTrue);
-      expect(await repo.getAll(), isEmpty, reason: 'demo is never saved');
-      await keys.deleteKey();
-      expect(keys.hasKey, isFalse);
+      expect(keys.isLoaded, isTrue);
+      expect(keys.hasKeys, isFalse);
+      final created = await keys.createKey('Personal');
+      expect(keys.keys, [created]);
+      expect(keys.activeKey, created);
+      expect(keys.isAvailable(created.id, 1), isTrue);
+      expect(keys.isAvailable(created.id, 2), isFalse);
+      expect(keys.isBusy, isFalse);
     });
 
-    test('shows stored active key metadata and can delete it', () async {
-      final repo = InMemoryKeyMetadataRepository([
-        KeyMetadata(
-          id: 'k1',
-          name: 'Personal',
-          version: 2,
-          algorithm: KeyMetadata.hillCipher2x2,
-          createdAt: DateTime(2026),
-        ),
-      ]);
-      final keys = KeyProvider(repo);
+    test('switches the active key and deletes an unused key', () async {
+      final keys = build();
       await keys.load();
-      expect(keys.isDemo, isFalse);
-      expect(keys.keyInfo!.version, 2);
-      await keys.deleteKey();
-      expect(keys.hasKey, isFalse);
-      expect(await repo.getAll(), isEmpty);
+      final first = await keys.createKey('First');
+      final second = await keys.createKey('Second');
+      expect(keys.activeKey!.id, second.id);
+      await keys.setActive(first.id);
+      expect(keys.activeKey!.id, first.id);
+      expect(keys.keys.where((k) => k.isActive), hasLength(1));
+      await keys.deleteKey(second.id);
+      expect(keys.keys.map((k) => k.id), [first.id]);
+    });
+
+    test('loads stored key metadata', () async {
+      final keys = build(
+        metadata: InMemoryKeyMetadataRepository([
+          KeyMetadata(
+            id: 'k1',
+            name: 'Stored',
+            version: 2,
+            algorithm: KeyMetadata.hillCipher2x2,
+            createdAt: DateTime(2026),
+          ),
+        ]),
+      );
+      await keys.load();
+      expect(keys.keyById('k1')!.version, 2);
+      expect(keys.keyById('missing'), isNull);
     });
   });
 

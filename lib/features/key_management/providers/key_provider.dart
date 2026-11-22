@@ -3,75 +3,101 @@ import 'package:flutter/foundation.dart';
 import '../../../core/errors/app_exceptions.dart';
 import '../../../core/errors/error_reporter.dart';
 import '../../../data/models/key_metadata.dart';
-import '../../../data/repositories/key_metadata_repository.dart';
+import '../../encryption/data/key_service.dart';
 
-/// Encryption key status, kept separate from note management.
-///
-/// Reads stored key metadata. Real keys cannot be created yet, so normally
-/// there is none. [showDemoKey] shows clearly labelled example metadata to
-/// preview the screen; the demo is never saved.
+/// Key list state for the UI. All work is done by [KeyService]; this class
+/// only holds the loaded metadata (never key material).
 class KeyProvider extends ChangeNotifier {
-  KeyProvider(this._repository, {DateTime Function()? clock})
-    : _clock = clock ?? DateTime.now;
+  KeyProvider(this._service);
 
-  final KeyMetadataRepository _repository;
-  final DateTime Function() _clock;
+  final KeyService _service;
 
-  KeyMetadata? _activeKey;
-  KeyMetadata? _demoKey;
+  List<KeyMetadata> _keys = const [];
+  bool _isLoaded = false;
+  bool _busy = false;
   AppException? _error;
 
-  /// The key shown on screen: the stored active key, or the demo preview.
-  KeyMetadata? get keyInfo => _activeKey ?? _demoKey;
+  /// Every key, the active key first.
+  List<KeyMetadata> get keys => _keys;
+  bool get isLoaded => _isLoaded;
+  bool get hasKeys => _keys.isNotEmpty;
 
-  bool get hasKey => keyInfo != null;
+  /// True while a create, activate or delete operation runs.
+  bool get isBusy => _busy;
 
-  /// True when the shown key is the unsaved demo preview.
-  bool get isDemo => _activeKey == null && _demoKey != null;
-
-  /// Set when loading or deleting key metadata failed.
+  /// Set when loading key information failed.
   AppException? get error => _error;
+
+  KeyMetadata? get activeKey {
+    for (final k in _keys) {
+      if (k.isActive) return k;
+    }
+    return _keys.isEmpty ? null : _keys.first;
+  }
+
+  KeyMetadata? keyById(String? id) {
+    if (id == null) return null;
+    for (final k in _keys) {
+      if (k.id == id) return k;
+    }
+    return null;
+  }
+
+  /// Whether metadata exists for exactly this key id and version.
+  bool isAvailable(String? keyId, int? version) {
+    final key = keyById(keyId);
+    return key != null && key.version == version;
+  }
 
   Future<void> load() async {
     try {
-      _activeKey = await _repository.getActive();
+      _keys = await _service.listKeys();
       _error = null;
+      _isLoaded = true;
     } on AppException catch (error) {
       _error = error;
     } catch (error, stack) {
-      ErrorReporter.report('KeyProvider.load', error, stack);
+      ErrorReporter.report('KeyProvider.load', error.runtimeType, stack);
       _error = StorageException(
         'Key information could not be loaded.',
-        cause: error,
+        cause: error.runtimeType,
       );
     }
     notifyListeners();
   }
 
-  /// Shows example metadata (no key material, not saved).
-  void showDemoKey() {
-    _demoKey = KeyMetadata(
-      id: 'DEMO-2X2-0001',
-      name: 'Demo key',
-      version: 1,
-      algorithm: KeyMetadata.hillCipher2x2,
-      createdAt: _clock(),
-    );
-    notifyListeners();
-  }
+  /// Creates a new key and makes it active. Throws [AppException].
+  Future<KeyMetadata> createKey(String name) =>
+      _run(() => _service.createKey(name));
 
-  /// Removes the demo preview, or deletes the stored active key metadata.
-  /// Throws [AppException] if a stored record could not be deleted.
-  Future<void> deleteKey() async {
-    if (isDemo) {
-      _demoKey = null;
-      notifyListeners();
-      return;
+  /// Makes [keyId] the default key for encryption. Throws [AppException].
+  Future<void> setActive(String keyId) => _run(() => _service.setActive(keyId));
+
+  /// Deletes an unused key. Throws [KeyInUseException] if notes use it.
+  Future<void> deleteKey(String keyId) => _run(() => _service.deleteKey(keyId));
+
+  Future<T> _run<T>(Future<T> Function() action) async {
+    if (_busy) {
+      throw const StorageException('Please wait for the current action.');
     }
-    final active = _activeKey;
-    if (active == null) return;
-    await _repository.delete(active.id);
-    _activeKey = await _repository.getActive();
+    _busy = true;
     notifyListeners();
+    try {
+      final result = await action();
+      _keys = await _service.listKeys();
+      _error = null;
+      return result;
+    } on AppException {
+      rethrow;
+    } catch (error, stack) {
+      ErrorReporter.report('KeyProvider', error.runtimeType, stack);
+      throw StorageException(
+        'Key information could not be saved.',
+        cause: error.runtimeType,
+      );
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
   }
 }
